@@ -112,6 +112,10 @@ table.g td.dragover{background:#e8f1fb;outline:2px dashed var(--accent);outline-
 .chip .s{opacity:.9;font-size:11px}
 .chip.task{background:#fff;color:var(--ink);border:1px dashed var(--c,#888)}
 .chip .ok{position:absolute;right:4px;top:2px;font-size:11px;background:rgba(255,255,255,.9);color:var(--green);border-radius:8px;padding:0 4px;font-weight:700}
+.chip.pre{background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.28) 0 6px,transparent 6px 12px);opacity:.72}
+.chip .pt{display:inline-block;background:#fff;color:var(--c);border-radius:3px;font-size:10px;font-weight:700;padding:0 3px;margin-right:3px}
+.prog span.prev{border-style:dashed}
+.kc.pre{opacity:.6;background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.25) 0 8px,transparent 8px 16px)}
 .chip.hold{filter:grayscale(.8);opacity:.7}
 .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--ink2)}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
@@ -146,7 +150,7 @@ table.kt td{height:96px}
 </head>
 <body>
 <header>
-  <h1>Repair Shop 排程系統<small>雛型 v0.2.0</small></h1>
+  <h1>Repair Shop 排程系統<small>雛型 v0.2.1</small></h1>
   <nav id="nav"></nav>
   <div class="sync"><span class="dot" id="sdot"></span><span id="slbl">未載入</span><button class="hbtn" id="btnReload" title="重新讀取 RCPR、報工與排程資料">↻ 重新讀取</button></div>
 </header>
@@ -185,7 +189,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 <script>
 'use strict';
 /* ================= 常數 ================= */
-const APPVER='0.2.0';
+const APPVER='0.2.1';
 const WD=['日','一','二','三','四','五','六'];
 const SCOLORS=['var(--s0)','var(--s1)','var(--s2)','var(--s3)','var(--s4)','#7a7d75','#a14d8f'];
 const UCOLORS={'已收貨':'#9a9890','待拆解':'#eb6834','報告彙整':'#c98a00','報價中':'#6250d6','待維修':'#2a78d6','維修中':'#1baf7a','退修':'#7a7d75','報廢':'#55574f','OFF':'#16324f','待料':'#d6383a','HOLD':'#55574f'};
@@ -404,11 +408,14 @@ function indexRc(){if(S.rc){S.rc.byWo={};for(const r of S.rc.rows)S.rc.byWo[r.wo
 function allRecs(){const ws=new Set([...(S.rc?S.rc.rows.map(r=>r.wo):[]),...Object.keys(S.jobs)]);return[...ws].map(rec).filter(Boolean)}
 function activeRecs(){return allRecs().filter(x=>!x.closed)}
 function nextStation(x){
+  {const info=stationInfo(x.wo);const st=S.set.stations.find(s=>!isLocked(info[s]));if(st&&allAssigns(x.wo).length)return st}
   if(x.u==='待拆解'||x.u==='已收貨')return S.set.stations[0];
   const i=x.rp?stIdx(x.rp.last):-1;
   if(i<0)return S.set.stations[Math.min(1,S.set.stations.length-1)];
   return x.rp.last;
 }
+async function clearFuture(ref){let n=0;for(const p of Object.values(S.plans)){let ch=false;for(const[k,list]of Object.entries(p.cells||{})){const d=k.split('|')[0];if(d<today())continue;const keep=list.filter(e=>e.ref!==ref);if(keep.length!==list.length){n+=list.length-keep.length;ch=true;if(keep.length)p.cells[k]=keep;else delete p.cells[k]}}
+  if(ch){p.updatedAt=Date.now();await Store.write('plan/'+p.week+'.json',p)}}if(n)scheduleKiosk();return n}
 async function saveJob(wo,fn,msg){
   const j=clone(S.jobs[wo]||{wo,log:[],createdAt:Date.now()});
   if(!j.snap&&S.rc&&S.rc.byWo[wo]){const r=S.rc.byWo[wo];j.snap={receive:r.receive,cust:r.cust,model:r.model,sn:r.sn,type:r.type,wty:r.wty,sales:r.sales,insales:r.insales,u:r.u,v:r.v,z:r.z}}
@@ -430,26 +437,30 @@ function refInfo(ref){
 }
 /* 某 WO 全部排程（所有日期），可排除一筆（移動／編輯自己時） */
 function allAssigns(ref,exceptId){const out=[];for(const p of Object.values(S.plans))for(const[k,list]of Object.entries(p.cells||{}))for(const e of list)if(e.ref===ref&&e.id!==exceptId){const[d,staff,st]=k.split('|');out.push({d,staff,st,id:e.id})}return out.sort((a,b)=>a.d.localeCompare(b.d))}
-/* 各站別狀態：allowed=狀態允許排、sched=已排（日期）、done=已報工（h） */
+/* 預排：報價確認前（業務還沒按同意）就排拆解以外的站別。算工作量、看板淡色顯示；變成「待維修」後自動轉正式 */
+const PRE_U=['已收貨','待拆解','報告彙整','報價中'];
+function isPreEntry(ref,st){if(String(ref).startsWith('T'))return false;const x=rec(ref);return !!(x&&PRE_U.includes(x.u)&&stIdx(st)>0)}
+/* 各站別狀態：pre=預排（待報價確認）、sched=已排（日期）、done=已報工（h） */
 function stationInfo(ref,exceptId){
   const out={};const isTask=String(ref).startsWith('T');const x=isTask?null:rec(ref);
   const as=isTask?[]:allAssigns(ref,exceptId);
-  const early=x&&(x.u==='待拆解'||x.u==='已收貨');
+  const pre=!!(x&&PRE_U.includes(x.u));
   S.set.stations.forEach((st,i)=>{const sd=as.filter(a=>a.st===st).map(a=>a.d);
-    out[st]={allowed:isTask||!early||i===0,sched:sd,done:x&&x.rp&&x.rp.st[st]?x.rp.st[st]:0,past:!!(x&&i===0&&['報告彙整','報價中','待維修','維修中'].includes(x.u))}});
+    out[st]={allowed:true,pre:pre&&i>0,sched:sd,done:x&&x.rp&&x.rp.st[st]?x.rp.st[st]:0,past:!!(x&&i===0&&['報告彙整','報價中','待維修','維修中'].includes(x.u))}});
   return out;
 }
 const isLocked=si=>si.sched.length>0||si.done>0||si.past;
 function stLabel(st,si){
   if(!si.allowed)return st+'（待維修後才能排）';
-  const a=[];if(si.sched.length)a.push('已排 '+si.sched.map(md).join('、'));if(si.done)a.push('已報工 '+si.done+'h');if(si.past&&!si.sched.length&&!si.done)a.push('已過拆解階段');
+  const a=[];if(si.pre&&!isLocked(si))a.push('預排：待報價確認');if(si.sched.length)a.push('已排 '+si.sched.map(md).join('、'));if(si.done)a.push('已報工 '+si.done+'h');if(si.past&&!si.sched.length&&!si.done)a.push('已過拆解階段');
   return st+(a.length?'（'+a.join('；')+'）':'');
 }
-/* 站別下拉：鎖住的灰底不能選，勾「延續／重工」才解鎖；待拆解只能選第一站 */
-function stationSelect(id,ref,cur,exceptId){
+/* 站別下拉：已排或已報工的灰底不能選，勾「延續／重工」才解鎖；報價確認前的後段站別標示「預排」 */
+function stationSelect(id,ref,cur,exceptId,want){
   const info=stationInfo(ref,exceptId);
   const ok=st=>info[st].allowed&&(!isLocked(info[st])||st===cur);
   let def=cur&&info[cur]&&info[cur].allowed?cur:null;
+  if(!def&&want&&info[want]&&ok(want))def=want;
   if(!def){const x=String(ref).startsWith('T')?null:rec(ref);const ns=x?nextStation(x):S.set.stations[0];def=ok(ns)?ns:S.set.stations.find(ok)||''}
   const anyLocked=S.set.stations.some(st=>info[st].allowed&&isLocked(info[st])&&st!==cur);
   return{info,html:`<select class="in" id="${id}">${def?'':'<option value="">（沒有可排的站別）</option>'}${S.set.stations.map(st=>{const si=info[st];const dis=!si.allowed||(isLocked(si)&&st!==cur);
@@ -466,6 +477,7 @@ async function checkStation(ref,st,exceptId){
   if(String(ref).startsWith('T'))return true;
   const si=stationInfo(ref,exceptId)[st];if(!si)return true;
   if(!si.allowed){toast('「待拆解」只能排「'+S.set.stations[0]+'」，業務同意（待維修）後才能排其他站');return false}
+  if(!isLocked(si)&&si.pre){toast('已預排「'+st+'」：業務同意維修後自動轉正式');return true}
   if(isLocked(si))return await confirmBox(`這張 WO 的「${st}」${[si.sched.length?'已排 '+si.sched.map(md).join('、'):'',si.done?'已報工 '+si.done+'h':'',si.past&&!si.sched.length&&!si.done?'已過拆解階段':''].filter(Boolean).join('，')}。\n要當作延續或重工再排一次嗎？`,'延續／重工');
   return true;
 }
@@ -642,7 +654,7 @@ function renderTodo(){
 
 /* ================= 排程台 ================= */
 function poolItems(){
-  const A=activeRecs().filter(x=>S.set.uSched.includes(x.u)||x.hold||x.matOn);
+  const A=activeRecs().filter(x=>S.set.uSched.includes(x.u)||['報告彙整','報價中'].includes(x.u)||x.hold||x.matOn);
   const f=S.pf;const q=f.q.trim().toLowerCase();
   return A.filter(x=>(!f.type||x.q===f.type)&&(!q||[x.wo,x.cust,x.model,x.sn].join(' ').toLowerCase().includes(q)))
     .sort((a,b)=>(a.prio??1e9)-(b.prio??1e9)||a.receive.localeCompare(b.receive));
@@ -652,7 +664,7 @@ function fullyPlanned(x){const info=stationInfo(x.wo);const al=S.set.stations.fi
 function progHtml(x){
   const info=stationInfo(x.wo);
   return`<div class="prog">${S.set.stations.map((st,i)=>{const si=info[st];const c=SCOLORS[i%SCOLORS.length];
-    const cls=si.done?'done':si.sched.length?'sch':si.past?'past':si.allowed?'':'na';
+    const cls=si.done?'done':si.sched.length?(si.pre?'sch prev':'sch'):si.past?'past':si.allowed?'':'na';
     return`<span class="${cls}" style="--c:${c}" title="${esc(stLabel(st,si))}">${esc(stShort(st))}</span>`}).join('')}</div>`;
 }
 function cardHtml(x){
@@ -671,9 +683,10 @@ function taskCardHtml(t){return`<div class="card task" draggable="true" data-ref
 function renderBoard(){
   const items=poolItems();
   const tasks=Object.values(S.tasks).filter(t=>!t.done);
-  const PT=[['待拆解','待拆解',UCOLORS['待拆解']],['待維修','待維修',UCOLORS['待維修']],['維修中','維修中',UCOLORS['維修中']],['hold','待料／HOLD','var(--red)'],['done','已排完','var(--brand2)'],['task','無 WO','#7a7d75']];
+  const PT=[['待拆解','待拆解',UCOLORS['待拆解']],['quote','報價中',UCOLORS['報價中']],['待維修','待維修',UCOLORS['待維修']],['維修中','維修中',UCOLORS['維修中']],['hold','待料／HOLD','var(--red)'],['done','已排完','var(--brand2)'],['task','無 WO','#7a7d75']];
   const lists={hold:items.filter(x=>x.hold||x.matOn),done:items.filter(x=>!x.hold&&!x.matOn&&fullyPlanned(x)),task:tasks};
   for(const u of['待拆解','待維修','維修中'])lists[u]=items.filter(x=>x.u===u&&!x.hold&&!x.matOn&&!fullyPlanned(x));
+  lists.quote=items.filter(x=>['報告彙整','報價中'].includes(x.u)&&!x.hold&&!x.matOn&&!fullyPlanned(x));
   let cur=ls.get('rs1_ptab')||'待拆解';if(!lists[cur])cur='待拆解';
   const m=$('#main');
   m.innerHTML=`<div class="board">
@@ -683,7 +696,7 @@ function renderBoard(){
      <input class="sm" id="pQ" placeholder="搜尋客戶／型號／WO" value="${esc(S.pf.q)}" style="flex:1;min-width:120px"></div>
     <div class="ptabs" id="pTabs">${PT.map(([k,l,c])=>`<button data-pt="${k}" class="${k===cur?'on':''}" style="--c:${c}">${esc(l)}<span>${lists[k].length}</span></button>`).join('')}</div>
     <div class="pb" id="poolBody">
-     ${cur==='done'?'<div class="muted" style="font-size:12px;margin-bottom:6px">可排的站別都已排或已報工</div>':''}
+     ${cur==='done'?'<div class="muted" style="font-size:12px;margin-bottom:6px">5 個站別都已排（含預排）或已報工</div>':''}${cur==='quote'?'<div class="muted" style="font-size:12px;margin-bottom:6px">報告彙整、報價中：拆解以外的站別可先預排，業務同意後自動轉正式</div>':''}
      ${cur==='task'?(tasks.map(taskCardHtml).join('')||'<div class="empty">沒有無 WO 工作</div>'):(lists[cur].map(cardHtml).join('')||'<div class="empty">（無）</div>')}
     </div></div>
    <div class="panel" id="gridPanel"></div></div>`;
@@ -719,9 +732,9 @@ function weekDays(){const n=S.set.days||6;return Array.from({length:n},(_,i)=>ad
 function chipHtml(e,day,staff,compact){
   const info=refInfo(e.ref);const st=e.station;const c=stColor(st);
   const ok=!info.task&&didWork(day,staff,e.ref);
-  const hold=info.x&&(info.x.hold||info.x.matOn);
-  return`<div class="chip${info.task?' task':''}${hold?' hold':''}" draggable="true" data-day="${day}" data-key="${e.key}" data-id="${e.id}" data-ref="${e.ref}" style="--c:${c}" title="${esc((info.title||info.cust)+' '+info.model+' '+(info.task?'':e.ref)+' '+st+(e.note?' / '+e.note:''))}">
-   ${compact?`<b>${esc(stShort(st))}</b> `:''}<b>${esc(info.task?info.title:info.cust)}</b>${timeLabel(tOf(e))?` <span class="s">${esc(timeLabel(tOf(e)))}</span>`:''}<br><span class="s">${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}</span>${ok?'<span class="ok" title="當天已有報工">✓</span>':''}</div>`;
+  const hold=info.x&&(info.x.hold||info.x.matOn);const pre=isPreEntry(e.ref,st);
+  return`<div class="chip${info.task?' task':''}${hold?' hold':''}${pre?' pre':''}" draggable="true" data-day="${day}" data-key="${e.key}" data-id="${e.id}" data-ref="${e.ref}" style="--c:${c}" title="${esc((info.title||info.cust)+' '+info.model+' '+(info.task?'':e.ref)+' '+st+(e.note?' / '+e.note:''))}">
+   ${pre?'<span class="pt">預</span>':''}${compact?`<b>${esc(stShort(st))}</b> `:''}<b>${esc(info.task?info.title:info.cust)}</b>${timeLabel(tOf(e))?` <span class="s">${esc(timeLabel(tOf(e)))}</span>`:''}<br><span class="s">${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}</span>${ok?'<span class="ok" title="當天已有報工">✓</span>':''}</div>`;
 }
 function renderGrid(){
   const gp=$('#gridPanel');const isWeek=S.bview==='week';
@@ -775,18 +788,19 @@ async function copyPrevDay(){
     await addAssign(S.day,e.staff,e.station,e.ref,tOf(e),e.note);n++}
   toast(n?`已複製 ${n} 格（${md(p)}）`:'前一工作日沒有可複製的排程');renderBoard();
 }
-function dlgOpen(html,bind){const d=$('#dlg');d.innerHTML=html;d.showModal();d.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>d.close());if(bind)bind(d);return d}
-function dropDialog(day,staff,ref){
-  const info=refInfo(ref);const SS=stationSelect('dSt',ref,null);
+function dlgOpen(html,bind){const d=$('#dlg');if(d.open)d.close();d.innerHTML=html;d.showModal();d.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>d.close());if(bind)bind(d);return d}
+function dropDialog(day,staff,ref,want,editable){
+  const info=refInfo(ref);const SS=stationSelect('dSt',ref,null,undefined,want);
   dlgOpen(`<div class="dh"><h3>排程：${esc(info.task?info.title:info.cust+' '+info.model)}</h3></div><div class="db">
-   <p>${md(day)}（${wd(day)}）· <b>${esc(staff)}</b>${info.x&&info.x.rp?' · 最後報工：'+esc(info.x.rp.last)+' '+md(info.x.rp.lastDate):''}</p>
+   ${editable?`<div class="cols2"><div class="f"><label>日期</label><input class="in" type="date" id="dDay" value="${day}"></div><div class="f"><label>工程師</label><select class="in" id="dStaff">${S.set.engineers.map(n=>`<option${n===staff?' selected':''}>${esc(n)}</option>`).join('')}</select></div></div>`:`<p>${md(day)}（${wd(day)}）· <b>${esc(staff)}</b>${info.x&&info.x.rp?' · 最後報工：'+esc(info.x.rp.last)+' '+md(info.x.rp.lastDate):''}</p>`}
+   ${info.x&&PRE_U.includes(info.x.u)?'<div class="warnbox" style="margin-bottom:8px">這張工單還沒報價確認（'+esc(info.x.u)+'）：拆解以外的站別會排成「預排」，業務同意維修後自動轉正式。</div>':''}
    <div class="f"><label>站別</label>${SS.html}</div>
    <div class="f"><label>時段</label>${timeField('dT',fullT())}</div>
    <div class="f"><label>連續排幾個工作日</label><input class="in" id="dN" type="number" min="1" max="10" value="1"></div>
    <div class="f"><label>備註（看板會顯示在提示）</label><input class="in" id="dNote"></div></div>
    <div class="df"><button class="btn" data-x>取消</button><button class="btn pri" id="dOk">加入</button></div>`,d=>{
     bindUnlock('dSt');bindTime('dT');
-    $('#dOk').onclick=async()=>{const st=$('#dSt').value;if(!st){toast('沒有可排的站別');return}const h=readTime('dT');if(!h)return;const note=$('#dNote').value.trim();let n=Math.max(1,Math.min(10,+$('#dN').value||1));let dd=day;
+    $('#dOk').onclick=async()=>{const st=$('#dSt').value;if(!st){toast('沒有可排的站別');return}const h=readTime('dT');if(!h)return;const note=$('#dNote').value.trim();let n=Math.max(1,Math.min(10,+$('#dN').value||1));let dd=editable?($('#dDay').value||day):day;if(editable)staff=$('#dStaff').value;await getPlan(dd);
       try{while(n>0){await addAssign(dd,staff,st,ref,h,note);n--;dd=addD(dd,1);if(parseD(dd).getDay()===0)dd=addD(dd,1);if(parseD(dd).getDay()===6&&(S.set.days||6)<6)dd=addD(dd,2)}d.close();renderBoard()}catch(e){toast('儲存失敗：'+e.message)}};
   });
 }
@@ -799,9 +813,13 @@ function assignDialog(day,key,id){
    <div class="f"><label>日期</label><input class="in" type="date" id="aDay" value="${day}"></div></div>
    <div class="f"><label>時段</label>${timeField('aT',tOf(e))}</div>
    <div class="f"><label>備註</label><input class="in" id="aNote" value="${esc(e.note)}"></div></div>
-   <div class="df"><button class="btn dng" id="aDel">從排程移除</button><span style="flex:1"></span><button class="btn" data-x>取消</button><button class="btn pri" id="aOk">儲存</button></div>`,d=>{
+   <div class="df"><button class="btn dng" id="aDel">從排程移除</button>${info.task?'':'<button class="btn" id="aNext">＋ 接著排下一站</button>'}<span style="flex:1"></span><button class="btn" data-x>取消</button><button class="btn pri" id="aOk">儲存</button></div>`,d=>{
     const j=$('#aJob');if(j)j.onclick=()=>{d.close();jobDialog(e.ref)};
     $('#aDel').onclick=async()=>{await removeAssign(day,key,id);d.close();renderBoard()};
+    const nx=$('#aNext');if(nx)nx.onclick=()=>{const info2=stationInfo(e.ref);const i0=stIdx(st);
+      const want=S.set.stations.find((s2,i)=>i>i0&&!isLocked(info2[s2]))||S.set.stations.find(s2=>!isLocked(info2[s2]));
+      let nd=addD(day,1);if(parseD(nd).getDay()===0)nd=addD(nd,1);if(parseD(nd).getDay()===6&&(S.set.days||6)<6)nd=addD(nd,2);
+      d.close();if(!want){toast('這張工單 5 個站別都已排或已報工');return}getPlan(nd).then(()=>dropDialog(nd,staff,e.ref,want,true))};
     bindUnlock('aSt');bindTime('aT');
     $('#aOk').onclick=async()=>{const nd=$('#aDay').value||day,ns=$('#aStaff').value,nst=$('#aSt').value,note=$('#aNote').value.trim();const h=readTime('aT');if(!h)return;
       try{await removeAssign(day,key,id);await addAssign(nd,ns,nst,e.ref,h,note);d.close();renderBoard()}catch(err){toast('儲存失敗：'+err.message)}};
@@ -853,7 +871,10 @@ function jobDialog(wo){
       const hold=g('hold'),matOn=g('mat');if(hold!==x.hold)ch.push(hold?'HOLD':'解除 HOLD');if(matOn!==x.matOn)ch.push(matOn?'標記待料':'解除待料');
       const items=g('items').split('\n').map(s=>s.trim()).filter(Boolean);const eta=g('eta');
       if(matOn&&!eta){toast('待料請填預計到料日');return}
-      try{await saveJob(wo,j=>{Object.assign(j,nv);if(nv.u!==x.u||!x.confirmed)j.uAt=Date.now();j.hold=hold;j.mat={on:matOn,eta,items};j.note=g('note');const p=g('prio');j.prio=p===''?undefined:+p},ch.length?ch.join('，'):'編輯');d.close();render()}catch(e){toast('儲存失敗：'+e.message)}};
+      const note=g('note'),pr=g('prio');
+      const closing=S.set.uClosed.includes(nv.u)&&!x.closed;const fut=closing?allAssigns(wo).filter(a=>a.d>=today()).length:0;
+      try{if(fut&&await confirmBox(`改成「${nv.u}」後，這張工單今天之後還有 ${fut} 格排程（含預排）。\n要一起從排程移除嗎？`,'一起移除'))await clearFuture(wo);
+        await saveJob(wo,j=>{Object.assign(j,nv);if(nv.u!==x.u||!x.confirmed)j.uAt=Date.now();j.hold=hold;j.mat={on:matOn,eta,items};j.note=note;j.prio=pr===''?undefined:+pr},ch.length?ch.join('，'):'編輯');if(d.open)d.close();render()}catch(e){toast('儲存失敗：'+e.message)}};
   });
 }
 
@@ -900,7 +921,7 @@ function kioskSnapshot(){
   const A=activeRecs();const days={};const t0=mondayOf(today());
   for(let i=-7;i<21;i++){const d=addD(t0,i);const es=planEntries(d);if(!es.length)continue;
     days[d]=es.map(e=>{const info=refInfo(e.ref);const t=tOf(e);return{staff:e.staff,station:e.station,task:!!info.task,title:info.task?info.title:info.cust,cust:info.cust||'',model:info.model||'',wo:info.task?'':e.ref,
-      start:t.start,end:t.end,shift:t.shift,note:e.note||'',hold:!!(info.x&&(info.x.hold||info.x.matOn)),done:!info.task&&didWork(d,e.staff,e.ref)}})}
+      start:t.start,end:t.end,shift:t.shift,note:e.note||'',pre:isPreEntry(e.ref,e.station),hold:!!(info.x&&(info.x.hold||info.x.matOn)),done:!info.task&&didWork(d,e.staff,e.ref)}})}
   const counts={};for(const x of A){const k=x.hold?'HOLD':x.matOn?'待料':x.u;counts[k]=(counts[k]||0)+1}
   const sm=x=>({wo:x.wo,cust:x.cust,model:x.model,u:x.u,age:x.age});
   return{app:'repair-shop-kiosk',ver:1,at:new Date().toISOString(),stations:S.set.stations,engineers:S.set.engineers,shifts:S.set.shifts,days,counts,
@@ -919,7 +940,7 @@ function kioskDay(d,big){
   const es=planEntries(d);const eng=S.set.engineers;
   return`<table class="kt"><tr><th style="width:110px">${md(d)}<small>星期${wd(d)}</small></th>${S.set.stations.map((s,i)=>`<th style="border-bottom:4px solid ${SCOLORS[i%SCOLORS.length]}">${esc(s)}</th>`).join('')}</tr>
    ${eng.map(n=>`<tr><td class="rh">${esc(n)}</td>${S.set.stations.map(st=>`<td${big?'':' style="height:60px"'}>${es.filter(e=>e.staff===n&&e.station===st).map(e=>{const info=refInfo(e.ref);const c=stColor(st);
-     return`<div class="kc${info.task?' task':''}" style="--c:${c}${info.x&&(info.x.hold||info.x.matOn)?';opacity:.55':''}"><b>${esc(info.task?info.title:info.cust)}</b><span>${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}${timeLabel(tOf(e))?' · '+esc(timeLabel(tOf(e))):''}${e.note?' · '+esc(e.note):''}</span></div>`}).join('')}</td>`).join('')}</tr>`).join('')}</table>`;
+     const pre=isPreEntry(e.ref,st);return`<div class="kc${info.task?' task':''}${pre?' pre':''}" style="--c:${c}${info.x&&(info.x.hold||info.x.matOn)?';opacity:.55':''}"><b>${pre?'預 ':''}${esc(info.task?info.title:info.cust)}</b><span>${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}${timeLabel(tOf(e))?' · '+esc(timeLabel(tOf(e))):''}${e.note?' · '+esc(e.note):''}</span></div>`}).join('')}</td>`).join('')}</tr>`).join('')}</table>`;
 }
 function renderKiosk(){
   let d=today();if(parseD(d).getDay()===0)d=addD(d,1);let n=addD(d,1);if(parseD(n).getDay()===0)n=addD(n,1);
