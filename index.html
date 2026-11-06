@@ -150,7 +150,7 @@ table.kt td{height:96px}
 </head>
 <body>
 <header>
-  <h1>Repair Shop 排程系統<small>雛型 v0.2.1</small></h1>
+  <h1>Repair Shop 排程系統<small>雛型 v0.2.2</small></h1>
   <nav id="nav"></nav>
   <div class="sync"><span class="dot" id="sdot"></span><span id="slbl">未載入</span><button class="hbtn" id="btnReload" title="重新讀取 RCPR、報工與排程資料">↻ 重新讀取</button></div>
 </header>
@@ -189,7 +189,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 <script>
 'use strict';
 /* ================= 常數 ================= */
-const APPVER='0.2.1';
+const APPVER='0.2.2';
 const WD=['日','一','二','三','四','五','六'];
 const SCOLORS=['var(--s0)','var(--s1)','var(--s2)','var(--s3)','var(--s4)','#7a7d75','#a14d8f'];
 const UCOLORS={'已收貨':'#9a9890','待拆解':'#eb6834','報告彙整':'#c98a00','報價中':'#6250d6','待維修':'#2a78d6','維修中':'#1baf7a','退修':'#7a7d75','報廢':'#55574f','OFF':'#16324f','待料':'#d6383a','HOLD':'#55574f'};
@@ -203,6 +203,7 @@ function DEFAULT_SETTINGS(){return{
   days:6,
   shifts:{'全天':['08:30','17:30'],'上午':['08:30','12:00'],'下午':['13:00','17:30'],'加班':['18:00','20:00']},
   breaks:{'午休':['12:00','13:00'],'晚休':['17:30','18:00']},
+  stDays:{},
   uFlow:['已收貨','待拆解','報告彙整','報價中','待維修','退修','報廢','維修中','OFF'],
   uClosed:['OFF','退修','報廢'],
   uSched:['待拆解','待維修','維修中'],
@@ -415,7 +416,7 @@ function nextStation(x){
   return x.rp.last;
 }
 async function clearFuture(ref){let n=0;for(const p of Object.values(S.plans)){let ch=false;for(const[k,list]of Object.entries(p.cells||{})){const d=k.split('|')[0];if(d<today())continue;const keep=list.filter(e=>e.ref!==ref);if(keep.length!==list.length){n+=list.length-keep.length;ch=true;if(keep.length)p.cells[k]=keep;else delete p.cells[k]}}
-  if(ch){p.updatedAt=Date.now();await Store.write('plan/'+p.week+'.json',p)}}if(n)scheduleKiosk();return n}
+  if(ch){p.updatedAt=Date.now();S._pv=(S._pv||0)+1;await Store.write('plan/'+p.week+'.json',p)}}if(n)scheduleKiosk();return n}
 async function saveJob(wo,fn,msg){
   const j=clone(S.jobs[wo]||{wo,log:[],createdAt:Date.now()});
   if(!j.snap&&S.rc&&S.rc.byWo[wo]){const r=S.rc.byWo[wo];j.snap={receive:r.receive,cust:r.cust,model:r.model,sn:r.sn,type:r.type,wty:r.wty,sales:r.sales,insales:r.insales,u:r.u,v:r.v,z:r.z}}
@@ -424,19 +425,41 @@ async function saveJob(wo,fn,msg){
 }
 
 /* ================= 排程資料（一週一檔） ================= */
-async function getPlan(day){const wk=isoWeek(day);if(!S.plans[wk]){S.plans[wk]=await Store.read('plan/'+wk+'.json')||{week:wk,cells:{}}}return S.plans[wk]}
-async function savePlan(day){const wk=isoWeek(day);const p=S.plans[wk];p.updatedAt=Date.now();await Store.write('plan/'+wk+'.json',p);scheduleKiosk()}
+async function getPlan(day){const wk=isoWeek(day);if(!S.plans[wk]){S._pv=(S._pv||0)+1;S.plans[wk]=await Store.read('plan/'+wk+'.json')||{week:wk,cells:{}}}return S.plans[wk]}
+async function savePlan(day){const wk=isoWeek(day);const p=S.plans[wk];p.updatedAt=Date.now();S._pv=(S._pv||0)+1;await Store.write('plan/'+wk+'.json',p);scheduleKiosk()}
 const ckey=(d,staff,st)=>d+'|'+staff+'|'+st;
-function planEntries(day){const p=S.plans[isoWeek(day)];if(!p)return[];const out=[];for(const[k,list]of Object.entries(p.cells)){const[d,staff,st]=k.split('|');if(d===day)for(const e of list)out.push({...e,day:d,staff,station:st,key:k})}return out}
-async function addAssign(day,staff,st,ref,t,note){t=t||fullT();const p=await getPlan(day);const k=ckey(day,staff,st);(p.cells[k]=p.cells[k]||[]).push({id:uid('a'),ref,shift:t.shift||'',start:t.start,end:t.end,note:note||''});await savePlan(day)}
+/* ---- 多天排程：一筆＝開始日＋天數（0.5 天為單位），依工作日展開到每天 ---- */
+const isWork=d=>{const w=parseD(d).getDay();return w!==0&&(w!==6||(S.set.days||6)>=6)};
+const nextWork=d=>{let x=addD(d,1);while(!isWork(x))x=addD(x,1);return x};
+function blockSlots(e,startDay){
+  const days=+e.days||0;if(!(days>1))return null;
+  let units=Math.round(days*2),d=startDay,pm=hm(tOf(e).start)>=hm('12:00');const out=[];
+  while(units>0){let r=out.find(o=>o.d===d);if(!r){r={d,am:false,pm:false};out.push(r)}
+    if(pm){r.pm=true;units--;d=nextWork(d);pm=false}else{r.am=true;units--;pm=true}}
+  return out;
+}
+function slotTime(r){const sh=shiftsOf();const f=sh['全天']||['08:30','17:30'],am=sh['上午']||[f[0],'12:00'],pm=sh['下午']||['13:00',f[1]];
+  return r.am&&r.pm?{shift:'全天',start:f[0],end:f[1]}:r.am?{shift:'上午',start:am[0],end:am[1]}:{shift:'下午',start:pm[0],end:pm[1]}}
+/* 一筆排程的結束點：{d, pm:true=結束在下午（下一站從隔個工作日開始）} */
+function blockEnd(e,startDay){const sl=blockSlots(e,startDay);if(sl){const l=sl[sl.length-1];return{d:l.d,pm:l.pm}}const t=tOf(e);return{d:startDay,pm:hm(t.end)>hm('12:30')}}
+function occAll(){
+  if(S._occ&&S._occV===S._pv)return S._occ;const by={};
+  for(const p of Object.values(S.plans))for(const[k,list]of Object.entries(p.cells||{})){const[d0,staff,st]=k.split('|');
+    for(const e of list){const sl=blockSlots(e,d0);
+      if(!sl){(by[d0]=by[d0]||[]).push({...e,day:d0,bday:d0,staff,station:st,key:k,part:1,parts:1});continue}
+      sl.forEach((r,i)=>{const t=slotTime(r);(by[r.d]=by[r.d]||[]).push({...e,...t,day:r.d,bday:d0,staff,station:st,key:k,part:i+1,parts:sl.length})})}}
+  S._occ=by;S._occV=S._pv;return by;
+}
+function planEntries(day){return occAll()[day]||[]}
+async function addAssign(day,staff,st,ref,t,note,days){t=t||fullT();const p=await getPlan(day);const k=ckey(day,staff,st);const e={id:uid('a'),ref,shift:t.shift||'',start:t.start,end:t.end,note:note||''};if(+days>1)e.days=Math.round(days*2)/2;(p.cells[k]=p.cells[k]||[]).push(e);await savePlan(day)}
 async function removeAssign(day,key,id){const p=await getPlan(day);p.cells[key]=(p.cells[key]||[]).filter(e=>e.id!==id);if(!p.cells[key].length)delete p.cells[key];await savePlan(day)}
-async function moveAssign(fromDay,key,id,toDay,staff,st){const p=await getPlan(fromDay);const e=(p.cells[key]||[]).find(x=>x.id===id);if(!e)return;await removeAssign(fromDay,key,id);await addAssign(toDay,staff,st,e.ref,tOf(e),e.note)}
+async function moveAssign(fromDay,key,id,toDay,staff,st){const p=await getPlan(fromDay);const e=(p.cells[key]||[]).find(x=>x.id===id);if(!e)return;await removeAssign(fromDay,key,id);await addAssign(toDay,staff,st,e.ref,tOf(e),e.note,e.days)}
 function refInfo(ref){
   if(String(ref).startsWith('T')){const t=S.tasks[ref];return t?{task:true,title:t.title,cust:t.cust||t.cat,model:t.model||'',done:t.done}:{task:true,title:'(已刪除工作)',cust:'',model:''}}
   const x=rec(ref);return x?{cust:x.cust,model:x.model,x}:{cust:ref,model:''};
 }
 /* 某 WO 全部排程（所有日期），可排除一筆（移動／編輯自己時） */
-function allAssigns(ref,exceptId){const out=[];for(const p of Object.values(S.plans))for(const[k,list]of Object.entries(p.cells||{}))for(const e of list)if(e.ref===ref&&e.id!==exceptId){const[d,staff,st]=k.split('|');out.push({d,staff,st,id:e.id})}return out.sort((a,b)=>a.d.localeCompare(b.d))}
+function allAssigns(ref,exceptId){const out=[];for(const list of Object.values(occAll()))for(const o of list)if(o.ref===ref&&o.id!==exceptId)out.push({d:o.day,staff:o.staff,st:o.station,id:o.id});return out.sort((a,b)=>a.d.localeCompare(b.d))}
 /* 預排：報價確認前（業務還沒按同意）就排拆解以外的站別。算工作量、看板淡色顯示；變成「待維修」後自動轉正式 */
 const PRE_U=['已收貨','待拆解','報告彙整','報價中'];
 function isPreEntry(ref,st){if(String(ref).startsWith('T'))return false;const x=rec(ref);return !!(x&&PRE_U.includes(x.u)&&stIdx(st)>0)}
@@ -481,7 +504,7 @@ async function checkStation(ref,st,exceptId){
   if(isLocked(si))return await confirmBox(`這張 WO 的「${st}」${[si.sched.length?'已排 '+si.sched.map(md).join('、'):'',si.done?'已報工 '+si.done+'h':'',si.past&&!si.sched.length&&!si.done?'已過拆解階段':''].filter(Boolean).join('，')}。\n要當作延續或重工再排一次嗎？`,'延續／重工');
   return true;
 }
-function upcoming(ref){const out=[];for(const p of Object.values(S.plans))for(const[k,list]of Object.entries(p.cells))for(const e of list)if(e.ref===ref){const[d,staff,st]=k.split('|');if(d>=today())out.push({d,staff,st})}return out.sort((a,b)=>a.d.localeCompare(b.d))}
+function upcoming(ref){return allAssigns(ref).filter(a=>a.d>=today())}
 function didWork(day,staff,ref){const s=S.rep&&S.rep.byDay[day+'|'+staff];return!!(s&&s.includes(ref))}
 
 /* ================= 載入 ================= */
@@ -525,7 +548,7 @@ async function loadStore(){
   // 讀全部週檔（判斷站別是否已排需要看所有日期）
   const all=await Store.readDir('plan',S.plans);
   for(const k of Object.keys(all))if(!all[k].cells)all[k].cells={};
-  S.plans=all;
+  S.plans=all;S._pv=(S._pv||0)+1;
 }
 let busy=false;
 async function reloadAll(ask){
@@ -677,7 +700,7 @@ function cardHtml(x){
    <div class="t2">${esc(x.model)} · ${x.wo} · ${esc(x.q||'')}</div>
    <div class="t2">${esc(x.u)} · ${x.rp?'最後 '+esc(x.rp.last)+' '+md(x.rp.lastDate)+' · '+x.rp.hours+'h':'尚無報工'}${x.age!=null?' · 收貨 '+x.age+' 天':''}</div>
    ${progHtml(x)}
-   ${as.length?`<div class="sched">排程 ${range}（${as.length} 格）${nx?' · 下一格 '+md(nx.d)+'('+wd(nx.d)+') '+esc(nx.staff)+' '+esc(stShort(nx.st)):' · 排程日已過'}</div>`:''}</div>`;
+   ${as.length?`<div class="sched">排程 ${range}（${new Set(as.map(a=>a.st)).size} 站・${new Set(as.map(a=>a.d)).size} 天）${nx?' · 下一格 '+md(nx.d)+'('+wd(nx.d)+') '+esc(nx.staff)+' '+esc(stShort(nx.st)):' · 排程日已過'}</div>`:''}</div>`;
 }
 function taskCardHtml(t){return`<div class="card task" draggable="true" data-ref="${t.id}" style="--c:#7a7d75"><div class="t1"><span>${esc(t.title)}</span><span class="sp"></span><span class="tag gray">${esc(t.cat)}</span></div><div class="t2">${esc([t.cust,t.model].filter(Boolean).join(' · '))}</div></div>`}
 function renderBoard(){
@@ -733,8 +756,8 @@ function chipHtml(e,day,staff,compact){
   const info=refInfo(e.ref);const st=e.station;const c=stColor(st);
   const ok=!info.task&&didWork(day,staff,e.ref);
   const hold=info.x&&(info.x.hold||info.x.matOn);const pre=isPreEntry(e.ref,st);
-  return`<div class="chip${info.task?' task':''}${hold?' hold':''}${pre?' pre':''}" draggable="true" data-day="${day}" data-key="${e.key}" data-id="${e.id}" data-ref="${e.ref}" style="--c:${c}" title="${esc((info.title||info.cust)+' '+info.model+' '+(info.task?'':e.ref)+' '+st+(e.note?' / '+e.note:''))}">
-   ${pre?'<span class="pt">預</span>':''}${compact?`<b>${esc(stShort(st))}</b> `:''}<b>${esc(info.task?info.title:info.cust)}</b>${timeLabel(tOf(e))?` <span class="s">${esc(timeLabel(tOf(e)))}</span>`:''}<br><span class="s">${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}</span>${ok?'<span class="ok" title="當天已有報工">✓</span>':''}</div>`;
+  return`<div class="chip${info.task?' task':''}${hold?' hold':''}${pre?' pre':''}" draggable="true" data-day="${e.bday||day}" data-key="${e.key}" data-id="${e.id}" data-ref="${e.ref}" style="--c:${c}" title="${esc((info.title||info.cust)+' '+info.model+' '+(info.task?'':e.ref)+' '+st+(e.note?' / '+e.note:''))}">
+   ${pre?'<span class="pt">預</span>':''}${compact?`<b>${esc(stShort(st))}</b> `:''}<b>${esc(info.task?info.title:info.cust)}</b>${e.parts>1?` <span class="s">${e.part}/${e.parts}</span>`:''}${timeLabel(tOf(e))?` <span class="s">${esc(timeLabel(tOf(e)))}</span>`:''}<br><span class="s">${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}</span>${ok?'<span class="ok" title="當天已有報工">✓</span>':''}</div>`;
 }
 function renderGrid(){
   const gp=$('#gridPanel');const isWeek=S.bview==='week';
@@ -771,7 +794,7 @@ function renderGrid(){
       const day=td.dataset.day,staff=td.dataset.staff,st=td.dataset.st;
       try{
         if(d.k==='pool'){
-          if(st){if(!await checkStation(d.ref,st))return;await addAssign(day,staff,st,d.ref,fullT(),'');renderBoard()}
+          if(st){if(!await checkStation(d.ref,st))return;await addAssign(day,staff,st,d.ref,fullT(),'',stDefault(st));renderBoard()}
           else dropDialog(day,staff,d.ref);
         }else if(d.k==='cell'){
           const old=d.key.split('|')[2];if(st&&st!==old&&!await checkStation(d.ref,st,d.id))return;await moveAssign(d.day,d.key,d.id,day,staff,st||old);renderBoard();
@@ -789,40 +812,65 @@ async function copyPrevDay(){
   toast(n?`已複製 ${n} 格（${md(p)}）`:'前一工作日沒有可複製的排程');renderBoard();
 }
 function dlgOpen(html,bind){const d=$('#dlg');if(d.open)d.close();d.innerHTML=html;d.showModal();d.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>d.close());if(bind)bind(d);return d}
-function dropDialog(day,staff,ref,want,editable){
+/* 天數欄位：0.5 為單位；>1 天時「時段」只決定從上午或下午開始 */
+function daysField(id,v){return`<div class="row"><button type="button" class="btn sm" data-dd="-0.5">−</button><input class="sm" id="${id}" type="number" min="0.5" max="30" step="0.5" value="${v}" style="width:80px;text-align:center"><button type="button" class="btn sm" data-dd="0.5">＋</button><span class="muted" id="${id}H"></span></div>`}
+function bindDays(id,tid,startDay){const el=$('#'+id),hh=$('#'+id+'H');
+  const paint=()=>{const v=Math.max(0.5,Math.round((+el.value||1)*2)/2);const st=$('#'+tid+'S').value||'08:30';
+    if(v>1){const sl=blockSlots({days:v,start:st,end:'17:30'},startDay()||today());const l=sl[sl.length-1];hh.textContent=`跨 ${sl.length} 個工作日，到 ${md(l.d)}（${wd(l.d)}）${l.pm?'下午':'上午'}結束；時段只決定從上午或下午開始`}
+    else hh.textContent=v===0.5?'半天：請在時段選上午或下午':''};
+  $$('[data-dd]').forEach(b=>b.onclick=()=>{el.value=Math.max(0.5,Math.min(30,(+el.value||1)+(+b.dataset.dd)));el.dataset.touched=1;paint()});
+  el.oninput=()=>{el.dataset.touched=1;paint()};$('#'+tid+'S').addEventListener('input',paint);$$('#'+tid+'C .tchip').forEach(b=>b.addEventListener('click',paint));
+  return paint}
+const stDefault=st=>+((S.set.stDays||{})[st])||1;
+/* 讀天數＋時段 → {t,days}；0.5 天且選全天時自動改成上午 */
+function readDT(did,tid){let days=Math.max(0.5,Math.round((+$('#'+did).value||1)*2)/2);let t=readTime(tid);if(!t)return null;
+  if(days===0.5&&hm(t.end)-hm(t.start)>300){const sh=shiftsOf();const am=sh['上午']||['08:30','12:00'];t={shift:'上午',start:am[0],end:am[1]}}
+  if(days>1){const sh=shiftsOf();const pm=hm(t.start)>=hm('12:00');const v=pm?(sh['下午']||['13:00','17:30']):(sh['全天']||['08:30','17:30']);t={shift:pm?'下午':'全天',start:v[0],end:v[1]}}
+  return{t,days}}
+function dropDialog(day,staff,ref,want,editable,startPM){
   const info=refInfo(ref);const SS=stationSelect('dSt',ref,null,undefined,want);
+  const sh=shiftsOf();const t0=startPM?{shift:'下午',start:(sh['下午']||['13:00'])[0],end:(sh['下午']||['13:00','17:30'])[1]}:fullT();
+  const firstSt=()=>$('#dSt').value;
   dlgOpen(`<div class="dh"><h3>排程：${esc(info.task?info.title:info.cust+' '+info.model)}</h3></div><div class="db">
-   ${editable?`<div class="cols2"><div class="f"><label>日期</label><input class="in" type="date" id="dDay" value="${day}"></div><div class="f"><label>工程師</label><select class="in" id="dStaff">${S.set.engineers.map(n=>`<option${n===staff?' selected':''}>${esc(n)}</option>`).join('')}</select></div></div>`:`<p>${md(day)}（${wd(day)}）· <b>${esc(staff)}</b>${info.x&&info.x.rp?' · 最後報工：'+esc(info.x.rp.last)+' '+md(info.x.rp.lastDate):''}</p>`}
+   ${editable?`<div class="cols2"><div class="f"><label>開始日期</label><input class="in" type="date" id="dDay" value="${day}"></div><div class="f"><label>工程師</label><select class="in" id="dStaff">${S.set.engineers.map(n=>`<option${n===staff?' selected':''}>${esc(n)}</option>`).join('')}</select></div></div>`:`<p>${md(day)}（${wd(day)}）開始 · <b>${esc(staff)}</b>${info.x&&info.x.rp?' · 最後報工：'+esc(info.x.rp.last)+' '+md(info.x.rp.lastDate):''}</p>`}
    ${info.x&&PRE_U.includes(info.x.u)?'<div class="warnbox" style="margin-bottom:8px">這張工單還沒報價確認（'+esc(info.x.u)+'）：拆解以外的站別會排成「預排」，業務同意維修後自動轉正式。</div>':''}
    <div class="f"><label>站別</label>${SS.html}</div>
-   <div class="f"><label>時段</label>${timeField('dT',fullT())}</div>
-   <div class="f"><label>連續排幾個工作日</label><input class="in" id="dN" type="number" min="1" max="10" value="1"></div>
+   <div class="f"><label>天數</label>${daysField('dD',stDefault(SS.html.match(/selected[^>]*>([^<（]+)/)?.[1]||''))}</div>
+   <div class="f"><label>時段</label>${timeField('dT',t0)}</div>
    <div class="f"><label>備註（看板會顯示在提示）</label><input class="in" id="dNote"></div></div>
    <div class="df"><button class="btn" data-x>取消</button><button class="btn pri" id="dOk">加入</button></div>`,d=>{
     bindUnlock('dSt');bindTime('dT');
-    $('#dOk').onclick=async()=>{const st=$('#dSt').value;if(!st){toast('沒有可排的站別');return}const h=readTime('dT');if(!h)return;const note=$('#dNote').value.trim();let n=Math.max(1,Math.min(10,+$('#dN').value||1));let dd=editable?($('#dDay').value||day):day;if(editable)staff=$('#dStaff').value;await getPlan(dd);
-      try{while(n>0){await addAssign(dd,staff,st,ref,h,note);n--;dd=addD(dd,1);if(parseD(dd).getDay()===0)dd=addD(dd,1);if(parseD(dd).getDay()===6&&(S.set.days||6)<6)dd=addD(dd,2)}d.close();renderBoard()}catch(e){toast('儲存失敗：'+e.message)}};
+    const paint=bindDays('dD','dT',()=>editable?$('#dDay').value:day);
+    const dd0=$('#dD');dd0.value=stDefault(firstSt());paint();
+    $('#dSt').addEventListener('change',()=>{if(!dd0.dataset.touched){dd0.value=stDefault(firstSt());paint()}});
+    if(editable)$('#dDay').addEventListener('input',paint);
+    $('#dOk').onclick=async()=>{const st=$('#dSt').value;if(!st){toast('沒有可排的站別');return}const r=readDT('dD','dT');if(!r)return;const note=$('#dNote').value.trim();
+      const dd=editable?($('#dDay').value||day):day;if(editable)staff=$('#dStaff').value;
+      try{await getPlan(dd);await addAssign(dd,staff,st,ref,r.t,note,r.days);d.close();renderBoard()}catch(e){toast('儲存失敗：'+e.message)}};
   });
 }
 function assignDialog(day,key,id){
   const p=S.plans[isoWeek(day)];const e=p&&(p.cells[key]||[]).find(x=>x.id===id);if(!e)return;const[,staff,st]=key.split('|');const info=refInfo(e.ref);
+  const t=tOf(e);const curDays=+e.days>1?+e.days:(hm(t.end)-hm(t.start)<=300?0.5:1);
+  const sl=blockSlots(e,day);const rng=sl?`${md(day)}（${wd(day)}）～ ${md(sl[sl.length-1].d)}（${wd(sl[sl.length-1].d)}），共 ${e.days} 天`:`${md(day)}（${wd(day)}）`;
   dlgOpen(`<div class="dh"><h3>${esc(info.task?info.title:info.cust+' '+info.model)}</h3>${info.task?'':`<button class="btn sm" id="aJob">案件明細</button>`}</div><div class="db">
-   <p>${md(day)}（${wd(day)}）· ${esc(staff)}${info.task?'':' · '+esc(e.ref)}${!info.task&&didWork(day,staff,e.ref)?' · <b style="color:var(--green)">當天已報工 ✓</b>':''}</p>
-   <div class="cols2"><div class="f"><label>工程師</label><select class="in" id="aStaff">${S.set.engineers.map(s=>`<option${s===staff?' selected':''}>${esc(s)}</option>`).join('')}</select></div>
-   <div class="f"><label>站別</label>${info.task?`<select class="in" id="aSt">${S.set.stations.map(s=>`<option${s===st?' selected':''}>${esc(s)}</option>`).join('')}</select>`:stationSelect('aSt',e.ref,st,id).html}</div>
-   <div class="f"><label>日期</label><input class="in" type="date" id="aDay" value="${day}"></div></div>
-   <div class="f"><label>時段</label>${timeField('aT',tOf(e))}</div>
+   <p>${rng} · ${esc(staff)}${info.task?'':' · '+esc(e.ref)}</p>
+   <div class="cols2"><div class="f"><label>工程師</label><select class="in" id="aStaff">${S.set.engineers.map(s2=>`<option${s2===staff?' selected':''}>${esc(s2)}</option>`).join('')}</select></div>
+   <div class="f"><label>站別</label>${info.task?`<select class="in" id="aSt">${S.set.stations.map(s2=>`<option${s2===st?' selected':''}>${esc(s2)}</option>`).join('')}</select>`:stationSelect('aSt',e.ref,st,id).html}</div>
+   <div class="f"><label>開始日期</label><input class="in" type="date" id="aDay" value="${day}"></div>
+   <div class="f"><label>天數</label>${daysField('aD',curDays)}</div></div>
+   <div class="f"><label>時段</label>${timeField('aT',t)}</div>
    <div class="f"><label>備註</label><input class="in" id="aNote" value="${esc(e.note)}"></div></div>
    <div class="df"><button class="btn dng" id="aDel">從排程移除</button>${info.task?'':'<button class="btn" id="aNext">＋ 接著排下一站</button>'}<span style="flex:1"></span><button class="btn" data-x>取消</button><button class="btn pri" id="aOk">儲存</button></div>`,d=>{
     const j=$('#aJob');if(j)j.onclick=()=>{d.close();jobDialog(e.ref)};
     $('#aDel').onclick=async()=>{await removeAssign(day,key,id);d.close();renderBoard()};
     const nx=$('#aNext');if(nx)nx.onclick=()=>{const info2=stationInfo(e.ref);const i0=stIdx(st);
       const want=S.set.stations.find((s2,i)=>i>i0&&!isLocked(info2[s2]))||S.set.stations.find(s2=>!isLocked(info2[s2]));
-      let nd=addD(day,1);if(parseD(nd).getDay()===0)nd=addD(nd,1);if(parseD(nd).getDay()===6&&(S.set.days||6)<6)nd=addD(nd,2);
-      d.close();if(!want){toast('這張工單 5 個站別都已排或已報工');return}getPlan(nd).then(()=>dropDialog(nd,staff,e.ref,want,true))};
-    bindUnlock('aSt');bindTime('aT');
-    $('#aOk').onclick=async()=>{const nd=$('#aDay').value||day,ns=$('#aStaff').value,nst=$('#aSt').value,note=$('#aNote').value.trim();const h=readTime('aT');if(!h)return;
-      try{await removeAssign(day,key,id);await addAssign(nd,ns,nst,e.ref,h,note);d.close();renderBoard()}catch(err){toast('儲存失敗：'+err.message)}};
+      const end=blockEnd(e,day);let nd,pm=false;if(end.pm){nd=nextWork(end.d)}else{nd=end.d;pm=true}
+      d.close();if(!want){toast('這張工單 5 個站別都已排或已報工');return}getPlan(nd).then(()=>dropDialog(nd,staff,e.ref,want,true,pm))};
+    bindUnlock('aSt');bindTime('aT');bindDays('aD','aT',()=>$('#aDay').value)();$('#aDay').addEventListener('input',()=>bindDays('aD','aT',()=>$('#aDay').value)());
+    $('#aOk').onclick=async()=>{const nd=$('#aDay').value||day,ns=$('#aStaff').value,nst=$('#aSt').value,note=$('#aNote').value.trim();const r=readDT('aD','aT');if(!r)return;
+      try{await removeAssign(day,key,id);await getPlan(nd);await addAssign(nd,ns,nst,e.ref,r.t,note,r.days);d.close();renderBoard()}catch(err){toast('儲存失敗：'+err.message)}};
   });
 }
 function taskDialog(t){
@@ -921,7 +969,7 @@ function kioskSnapshot(){
   const A=activeRecs();const days={};const t0=mondayOf(today());
   for(let i=-7;i<21;i++){const d=addD(t0,i);const es=planEntries(d);if(!es.length)continue;
     days[d]=es.map(e=>{const info=refInfo(e.ref);const t=tOf(e);return{staff:e.staff,station:e.station,task:!!info.task,title:info.task?info.title:info.cust,cust:info.cust||'',model:info.model||'',wo:info.task?'':e.ref,
-      start:t.start,end:t.end,shift:t.shift,note:e.note||'',pre:isPreEntry(e.ref,e.station),hold:!!(info.x&&(info.x.hold||info.x.matOn)),done:!info.task&&didWork(d,e.staff,e.ref)}})}
+      start:t.start,end:t.end,shift:t.shift,part:e.part||1,parts:e.parts||1,note:e.note||'',pre:isPreEntry(e.ref,e.station),hold:!!(info.x&&(info.x.hold||info.x.matOn)),done:!info.task&&didWork(d,e.staff,e.ref)}})}
   const counts={};for(const x of A){const k=x.hold?'HOLD':x.matOn?'待料':x.u;counts[k]=(counts[k]||0)+1}
   const sm=x=>({wo:x.wo,cust:x.cust,model:x.model,u:x.u,age:x.age});
   return{app:'repair-shop-kiosk',ver:1,at:new Date().toISOString(),stations:S.set.stations,engineers:S.set.engineers,shifts:S.set.shifts,days,counts,
@@ -940,7 +988,7 @@ function kioskDay(d,big){
   const es=planEntries(d);const eng=S.set.engineers;
   return`<table class="kt"><tr><th style="width:110px">${md(d)}<small>星期${wd(d)}</small></th>${S.set.stations.map((s,i)=>`<th style="border-bottom:4px solid ${SCOLORS[i%SCOLORS.length]}">${esc(s)}</th>`).join('')}</tr>
    ${eng.map(n=>`<tr><td class="rh">${esc(n)}</td>${S.set.stations.map(st=>`<td${big?'':' style="height:60px"'}>${es.filter(e=>e.staff===n&&e.station===st).map(e=>{const info=refInfo(e.ref);const c=stColor(st);
-     const pre=isPreEntry(e.ref,st);return`<div class="kc${info.task?' task':''}${pre?' pre':''}" style="--c:${c}${info.x&&(info.x.hold||info.x.matOn)?';opacity:.55':''}"><b>${pre?'預 ':''}${esc(info.task?info.title:info.cust)}</b><span>${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}${timeLabel(tOf(e))?' · '+esc(timeLabel(tOf(e))):''}${e.note?' · '+esc(e.note):''}</span></div>`}).join('')}</td>`).join('')}</tr>`).join('')}</table>`;
+     const pre=isPreEntry(e.ref,st);return`<div class="kc${info.task?' task':''}${pre?' pre':''}" style="--c:${c}${info.x&&(info.x.hold||info.x.matOn)?';opacity:.55':''}"><b>${pre?'預 ':''}${esc(info.task?info.title:info.cust)}</b><span>${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}${e.parts>1?' · 第 '+e.part+'/'+e.parts+' 天':''}${timeLabel(tOf(e))?' · '+esc(timeLabel(tOf(e))):''}${e.note?' · '+esc(e.note):''}</span></div>`}).join('')}</td>`).join('')}</tr>`).join('')}</table>`;
 }
 function renderKiosk(){
   let d=today();if(parseD(d).getDay()===0)d=addD(d,1);let n=addD(d,1);if(parseD(n).getDay()===0)n=addD(n,1);
@@ -993,6 +1041,7 @@ function renderSet(){
     <div class="f"><label>S 外勤業務</label><textarea class="in" rows="5" id="sLs"${dis('lists.sales')}>${lst(s.lists.sales)}</textarea><label>T 內勤業務</label><textarea class="in" rows="3" id="sLi"${dis('lists.insales')}>${lst(s.lists.insales)}</textarea></div></div>
    <div class="cols4">
     <div class="f"><label>時段（名稱=開始-結束，與報工相同）</label><textarea class="in" rows="5" id="sSh"${dis('shifts')}>${esc(Object.entries(s.shifts||{}).map(([n,v])=>n+'='+v[0]+'-'+v[1]).join('\n'))}</textarea></div>
+    <div class="f"><label>各站預設天數（站別=天數，0.5 為單位；留白＝1 天）</label><textarea class="in" rows="5" id="sSd" placeholder="檢整組裝=2">${esc(Object.entries(s.stDays||{}).map(([n,v])=>n+'='+v).join('\n'))}</textarea></div>
     <div class="f"><label>休息（工時自動扣除）</label><textarea class="in" rows="5" id="sBr"${dis('breaks')}>${esc(Object.entries(s.breaks||{}).map(([n,v])=>n+'='+v[0]+'-'+v[1]).join('\n'))}</textarea></div></div>
   </div></div>
   <div class="panel"><div class="ph"><h2>匯出／匯入</h2></div><div class="pb row">
@@ -1006,7 +1055,8 @@ function renderSet(){
       uFlow:L('#sU'),uClosed:L('#sUc'),uSched:L('#sUs')});
     s.lists={type:L('#sLt'),wty:L('#sLw'),sales:L('#sLs'),insales:L('#sLi')};
     const TR=id=>{const o={};for(const l of L(id)){const m=l.match(/^(.+?)\s*=\s*(\d{1,2}:\d{2})\s*[-–~]\s*(\d{1,2}:\d{2})$/);if(!m){toast('格式錯誤：'+l);return null}o[m[1].trim()]=[m[2].padStart(5,'0'),m[3].padStart(5,'0')]}return o};
-    const sh=TR('#sSh'),br=TR('#sBr');if(!sh||!br)return;if(!Object.keys(sh).length){toast('至少要有一個時段');return}s.shifts=sh;s.breaks=br;
+    const sh=TR('#sSh'),br=TR('#sBr');if(!sh||!br)return;
+    const sd={};for(const l of L('#sSd')){const m=l.match(/^(.+?)\s*=\s*(\d+(?:\.5)?|\.5)$/);if(!m){toast('預設天數格式錯誤：'+l+'（例：檢整組裝=2 或 噴漆塗層=0.5）');return}sd[m[1].trim()]=+m[2]}s.stDays=sd;if(!Object.keys(sh).length){toast('至少要有一個時段');return}s.shifts=sh;s.breaks=br;
     try{await saveSettings();toast('已儲存設定');render()}catch(e){toast('儲存失敗：'+e.message)}};
   $('#sLocal').onclick=async()=>{Store.mode='local';Store.root=null;await idb.del('root');ls.set('rs1_mode','local');await reloadAll(false)};
   $('#sFolder').onclick=async()=>{try{const d=await showDirectoryPicker({id:'rs1-root',mode:'readwrite'});Store.mode='fs';Store.root=d;Store.mods={};S.jobs={};S.tasks={};S.plans={};await idb.set('root',d);ls.set('rs1_mode','fs');
