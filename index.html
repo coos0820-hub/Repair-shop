@@ -56,6 +56,8 @@ input.in,select.in,textarea.in{padding:6px 8px;border:1px solid var(--line2);bor
 .f label{font-size:12px;color:var(--ink2)}
 .cols2{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px}
 .cols4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px 12px}
+.stabs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}.stabs button{border:1px solid #d5d9de;background:#fff;border-radius:6px;padding:6px 14px;font-size:14px;cursor:pointer}.stabs button.on{background:#1f3a5f;color:#fff;border-color:#1f3a5f}
+.ptbl select{padding:3px 4px;font-size:13px}.ptbl td,.ptbl th{white-space:nowrap}
 .warnbox{background:#fff8e6;border:1px solid #f2d27a;border-radius:8px;padding:10px 12px;margin-bottom:12px;color:#5c4400}
 .empty{padding:40px;text-align:center;color:var(--muted)}
 dialog{border:0;border-radius:12px;padding:0;box-shadow:0 10px 40px rgba(0,0,0,.25);max-width:min(860px,96vw);width:100%}
@@ -150,9 +152,9 @@ table.kt td{height:96px}
 </head>
 <body>
 <header>
-  <h1>Repair Shop 排程系統<small>雛型 v0.2.2</small></h1>
+  <h1>Repair Shop 排程系統<small>v0.3.0</small></h1>
   <nav id="nav"></nav>
-  <div class="sync"><span class="dot" id="sdot"></span><span id="slbl">未載入</span><button class="hbtn" id="btnReload" title="重新讀取 RCPR、報工與排程資料">↻ 重新讀取</button></div>
+  <div class="sync"><button class="hbtn" id="btnWho" style="display:none" title="切換身分">選擇身分</button><span class="dot" id="sdot"></span><span id="slbl">未載入</span><button class="hbtn" id="btnReload" title="重新讀取 RCPR、報工與排程資料">↻ 重新讀取</button></div>
 </header>
 <main id="main"></main>
 <dialog id="dlg"></dialog>
@@ -189,7 +191,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 <script>
 'use strict';
 /* ================= 常數 ================= */
-const APPVER='0.2.2';
+const APPVER='0.3.0';
 const WD=['日','一','二','三','四','五','六'];
 const SCOLORS=['var(--s0)','var(--s1)','var(--s2)','var(--s3)','var(--s4)','#7a7d75','#a14d8f'];
 const UCOLORS={'已收貨':'#9a9890','待拆解':'#eb6834','報告彙整':'#c98a00','報價中':'#6250d6','待維修':'#2a78d6','維修中':'#1baf7a','退修':'#7a7d75','報廢':'#55574f','OFF':'#16324f','待料':'#d6383a','HOLD':'#55574f'};
@@ -211,6 +213,7 @@ function DEFAULT_SETTINGS(){return{
   zMap:{'拆解檢查':'Disassembly','噴砂清洗':'Semi-Deco','檢整組裝':'Assembly','噴漆塗層':'Coating','性能測試':'Testing'},
   zWait:'Waiting',zMat:'Material impact',zDone:'Finished',
   lists:{type:['工業','半導體'],wty:[],sales:[],insales:[]},
+  perms:{},pins:{},adminHash:'',
   updatedAt:0
 }}
 
@@ -245,6 +248,59 @@ const stIdx=st=>S.set.stations.indexOf(st);
 const stColor=st=>SCOLORS[Math.max(0,stIdx(st))%SCOLORS.length];
 const stShort=st=>String(st||'').slice(0,2);
 const FSA='showDirectoryPicker' in window;
+
+/* ================= 身分與權限（人員、PIN 來自入口網站共用設定） ================= */
+const RS_ROLES=[['sched','排程'],['eng','工程師'],['sales','業務'],['admin','管理者'],['viewer','檢視者'],['guest','其他（無帳號）']];
+const PERM_DEF=[ // [key, 功能, 說明, 預設：排程 工程師 業務 管理者 檢視者 其他]
+ ['board.view','查看待確認、排程台、案件清單','','YYYYYY'],
+ ['sched.edit','排程：拖曳、指派、移動、複製前一天、排序','排程資料與看板檔也只由有此權限的人寫入','YNNYNN'],
+ ['job.edit','修改工單狀態、HOLD、待料、備註','','YNNYNN'],
+ ['task.edit','新增／修改無 WO 工作','','YNNYNN'],
+ ['wb.view','查看回寫預覽','','YNNYYN'],
+ ['export','匯出資料、下載看板檔','','YNNYYN'],
+ ['set.src','設定：資料來源','','YNNYNN'],
+ ['set.gen','設定：排程設定','','YNNYNN'],
+ ['set.data','設定：匯出／匯入','','YNNYNN']];
+const PV=[['Y','可'],['N','不可']];
+const ss={get(k){try{return sessionStorage.getItem(k)}catch(e){return null}},set(k,v){try{sessionStorage.setItem(k,v)}catch(e){}},del(k){try{sessionStorage.removeItem(k)}catch(e){}}};
+function people(){return (S.shared&&Array.isArray(S.shared.people))?S.shared.people.filter(p=>p&&p.name&&p.active!==false):[]}
+function authOn(){return people().length>0}
+function roleOf(p){const r=p.roles||[];return r.includes('rsSched')?'sched':r.includes('rs')?'eng':(r.includes('salesOut')||r.includes('salesIn'))?'sales':r.includes('viewer')?'viewer':null}
+function curRole(){if(!authOn())return 'admin';return ss.get('rs1_role')||'guest'}
+function myName(){return ss.get('rs1_me')||''}
+function P(key){const role=curRole();if(key==='set.perm')return role==='admin'?'Y':'N';const i=RS_ROLES.findIndex(r=>r[0]===role);const p=(S.set&&S.set.perms||{})[key];if(p&&p[role])return p[role];const d=PERM_DEF.find(x=>x[0]===key);return d?(d[3][i]||'N'):'N'}
+function can(key){return P(key)==='Y'}
+function need(key){if(can(key))return true;toast('目前身分（'+((RS_ROLES.find(r=>r[0]===curRole())||[])[1]||'訪客')+'）沒有這個權限');return false}
+async function sha(s){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('fsd:'+s));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+function paintWho(){const b=$('#btnWho');if(!b)return;if(!authOn()){b.style.display='none';return}b.style.display='';const r=curRole();b.textContent=r==='guest'?'訪客（只能看）':(r==='admin'?'管理者':(myName()+'｜'+((RS_ROLES.find(x=>x[0]===r)||[])[1]||'')))}
+function loginDialog(){
+  const ppl=people();const grp=r=>ppl.filter(p=>roleOf(p)===r);
+  const pills=(r,lab)=>{const L=grp(r);return L.length?`<div style="margin-bottom:10px"><div class="muted" style="margin-bottom:6px">${lab}</div><div class="row">${L.map(p=>`<button class="btn" data-who="${esc(r)}|${esc(p.name)}">${esc(p.name)}</button>`).join('')}</div></div>`:''};
+  dlgOpen(`<div class="dh"><h3>選擇身分</h3></div><div class="db" id="whoBody">${pills('sched','排程')}${pills('eng','工程師')}${pills('sales','業務')}${pills('viewer','檢視者（只能看）')}
+    <div class="muted" style="margin-bottom:6px">其他</div><div class="row"><button class="btn" data-who="admin|">🔧 系統管理員</button><button class="btn" data-who="guest|">👀 訪客（不登入，只能看）</button></div>
+    <p class="muted" style="font-size:12px;margin-top:10px">人員與 PIN 由入口網站「共用設定」維護，和訊息單系統用同一組 PIN。</p></div>
+    <div class="df"><button class="btn" data-x>取消</button></div>`,d=>{
+    d.querySelectorAll('[data-who]').forEach(b=>b.onclick=async()=>{const[role,name]=b.dataset.who.split('|');
+      if(role==='guest'){ss.set('rs1_role','guest');ss.del('rs1_me');d.close();afterLogin();return}
+      const isAdmin=role==='admin';const p=isAdmin?null:ppl.find(x=>x.name===name);
+      const local=isAdmin?S.set.adminHash:((S.set.pins||{})[name]||'');const hash=isAdmin?local:(p&&p.pin)||local;const first=!hash;
+      $('#whoBody').innerHTML=`<div style="font-size:16px;margin-bottom:8px"><b>${isAdmin?'系統管理員':esc(name)}</b></div>
+        <div class="f"><label>${isAdmin?'管理者密碼':'PIN'}${first?'（第一次使用，請設定）':''}</label><input class="in" type="password" id="pin1" autocomplete="off"></div>
+        ${first?'<div class="f"><label>再輸入一次</label><input class="in" type="password" id="pin2" autocomplete="off"></div>':''}
+        <div class="row"><button class="btn pri" id="pinOk">確定</button></div>`;
+      const go=async()=>{const v=$('#pin1').value;if(!v){toast('請輸入');return}
+        if(first){if(!isAdmin&&!/^\d{4,8}$/.test(v)){toast('PIN 要 4～8 位數字');return}if(isAdmin&&v.length<4){toast('密碼至少 4 碼');return}if(v!==$('#pin2').value){toast('兩次輸入不同');return}
+          const h=isAdmin?await sha('admin:'+v):await sha('pin:'+v);if(isAdmin)S.set.adminHash=h;else{S.set.pins=S.set.pins||{};S.set.pins[name]=h}
+          try{await saveSettings(true)}catch(e){toast('無法儲存：'+e.message);return}}
+        else if((isAdmin?await sha('admin:'+v):await sha('pin:'+v))!==hash){toast(isAdmin?'密碼錯誤':'PIN 錯誤');return}
+        ss.set('rs1_role',role);if(isAdmin)ss.del('rs1_me');else ss.set('rs1_me',name);d.close();afterLogin()};
+      $('#pinOk').onclick=go;$('#pin1').onkeydown=e=>{if(e.key==='Enter'&&!first)go()};$('#pin1').focus();
+    });
+  });
+}
+function afterLogin(){paintWho();toast('目前身分：'+$('#btnWho').textContent);render()}
+document.addEventListener('click',e=>{if(e.target.closest('#btnWho'))loginDialog()});
+
 
 /* ================= 存放（本機試用 / 資料夾） ================= */
 const idb={db:null,
@@ -357,11 +413,11 @@ async function loadRep(src){
 function mergeLists(){
   const L=S.rc&&S.rc.lists;if(!L)return;let ch=false;
   for(const k of['type','wty','sales','insales']){if(!(S.set.lists[k]||[]).length&&(L[k]||[]).length){S.set.lists[k]=L[k];ch=true}}
-  if(ch)saveSettings();
+  if(ch&&can('sched.edit'))saveSettings();
 }
 /* RCPR 進行中的 WO 存一份快照到 job，看板 PC 不用讀 RCPR 也能顯示 */
 async function syncSnaps(){
-  if(!S.rc)return;let n=0;
+  if(!S.rc||!can('sched.edit'))return 0;let n=0;
   for(const r of S.rc.rows){
     if(S.set.rcClosed.includes(r.u)&&!S.jobs[r.wo])continue;
     const snap={receive:r.receive,cust:r.cust,model:r.model,sn:r.sn,type:r.type,wty:r.wty,sales:r.sales,insales:r.insales,u:r.u,v:r.v,z:r.z,reason:r.reason,eta:r.eta};
@@ -415,9 +471,10 @@ function nextStation(x){
   if(i<0)return S.set.stations[Math.min(1,S.set.stations.length-1)];
   return x.rp.last;
 }
-async function clearFuture(ref){let n=0;for(const p of Object.values(S.plans)){let ch=false;for(const[k,list]of Object.entries(p.cells||{})){const d=k.split('|')[0];if(d<today())continue;const keep=list.filter(e=>e.ref!==ref);if(keep.length!==list.length){n+=list.length-keep.length;ch=true;if(keep.length)p.cells[k]=keep;else delete p.cells[k]}}
+async function clearFuture(ref){if(!can('sched.edit'))return 0;let n=0;for(const p of Object.values(S.plans)){let ch=false;for(const[k,list]of Object.entries(p.cells||{})){const d=k.split('|')[0];if(d<today())continue;const keep=list.filter(e=>e.ref!==ref);if(keep.length!==list.length){n+=list.length-keep.length;ch=true;if(keep.length)p.cells[k]=keep;else delete p.cells[k]}}
   if(ch){p.updatedAt=Date.now();S._pv=(S._pv||0)+1;await Store.write('plan/'+p.week+'.json',p)}}if(n)scheduleKiosk();return n}
 async function saveJob(wo,fn,msg){
+  if(!need('job.edit'))return false;
   const j=clone(S.jobs[wo]||{wo,log:[],createdAt:Date.now()});
   if(!j.snap&&S.rc&&S.rc.byWo[wo]){const r=S.rc.byWo[wo];j.snap={receive:r.receive,cust:r.cust,model:r.model,sn:r.sn,type:r.type,wty:r.wty,sales:r.sales,insales:r.insales,u:r.u,v:r.v,z:r.z}}
   fn(j);j.updatedAt=Date.now();if(msg)(j.log=j.log||[]).push({t:nowStr(),m:msg});
@@ -426,7 +483,7 @@ async function saveJob(wo,fn,msg){
 
 /* ================= 排程資料（一週一檔） ================= */
 async function getPlan(day){const wk=isoWeek(day);if(!S.plans[wk]){S._pv=(S._pv||0)+1;S.plans[wk]=await Store.read('plan/'+wk+'.json')||{week:wk,cells:{}}}return S.plans[wk]}
-async function savePlan(day){const wk=isoWeek(day);const p=S.plans[wk];p.updatedAt=Date.now();S._pv=(S._pv||0)+1;await Store.write('plan/'+wk+'.json',p);scheduleKiosk()}
+async function savePlan(day){if(!can('sched.edit'))return;const wk=isoWeek(day);const p=S.plans[wk];p.updatedAt=Date.now();S._pv=(S._pv||0)+1;await Store.write('plan/'+wk+'.json',p);scheduleKiosk()}
 const ckey=(d,staff,st)=>d+'|'+staff+'|'+st;
 /* ---- 多天排程：一筆＝開始日＋天數（0.5 天為單位），依工作日展開到每天 ---- */
 const isWork=d=>{const w=parseD(d).getDay();return w!==0&&(w!==6||(S.set.days||6)>=6)};
@@ -451,9 +508,9 @@ function occAll(){
   S._occ=by;S._occV=S._pv;return by;
 }
 function planEntries(day){return occAll()[day]||[]}
-async function addAssign(day,staff,st,ref,t,note,days){t=t||fullT();const p=await getPlan(day);const k=ckey(day,staff,st);const e={id:uid('a'),ref,shift:t.shift||'',start:t.start,end:t.end,note:note||''};if(+days>1)e.days=Math.round(days*2)/2;(p.cells[k]=p.cells[k]||[]).push(e);await savePlan(day)}
-async function removeAssign(day,key,id){const p=await getPlan(day);p.cells[key]=(p.cells[key]||[]).filter(e=>e.id!==id);if(!p.cells[key].length)delete p.cells[key];await savePlan(day)}
-async function moveAssign(fromDay,key,id,toDay,staff,st){const p=await getPlan(fromDay);const e=(p.cells[key]||[]).find(x=>x.id===id);if(!e)return;await removeAssign(fromDay,key,id);await addAssign(toDay,staff,st,e.ref,tOf(e),e.note,e.days)}
+async function addAssign(day,staff,st,ref,t,note,days){if(!need('sched.edit'))return;t=t||fullT();const p=await getPlan(day);const k=ckey(day,staff,st);const e={id:uid('a'),ref,shift:t.shift||'',start:t.start,end:t.end,note:note||''};if(+days>1)e.days=Math.round(days*2)/2;(p.cells[k]=p.cells[k]||[]).push(e);await savePlan(day)}
+async function removeAssign(day,key,id){if(!need('sched.edit'))return;const p=await getPlan(day);p.cells[key]=(p.cells[key]||[]).filter(e=>e.id!==id);if(!p.cells[key].length)delete p.cells[key];await savePlan(day)}
+async function moveAssign(fromDay,key,id,toDay,staff,st){if(!need('sched.edit'))return;const p=await getPlan(fromDay);const e=(p.cells[key]||[]).find(x=>x.id===id);if(!e)return;await removeAssign(fromDay,key,id);await addAssign(toDay,staff,st,e.ref,tOf(e),e.note,e.days)}
 function refInfo(ref){
   if(String(ref).startsWith('T')){const t=S.tasks[ref];return t?{task:true,title:t.title,cust:t.cust||t.cat,model:t.model||'',done:t.done}:{task:true,title:'(已刪除工作)',cust:'',model:''}}
   const x=rec(ref);return x?{cust:x.cust,model:x.model,x}:{cust:ref,model:''};
@@ -509,6 +566,7 @@ function didWork(day,staff,ref){const s=S.rep&&S.rep.byDay[day+'|'+staff];return
 
 /* ================= 載入 ================= */
 async function saveSettings(){S.set.updatedAt=Date.now();const o={...S.set};delete o._shared;await Store.write('settings.json',o)}
+const SHARED_AUTO='_共用設定.json';
 function normSettings(s){const d=DEFAULT_SETTINGS();s=Object.assign(d,s||{});s.lists=Object.assign(d.lists,s.lists||{});s.zMap=Object.assign({},s.zMap||d.zMap);
   if(!s.shifts||!Object.keys(s.shifts).length)s.shifts=d.shifts;if(!s.breaks)s.breaks=d.breaks;applyShared(s);return s}
 /* 共用設定.json 有值的欄位蓋過本系統設定（畫面上鎖住，請到入口網站改） */
@@ -518,6 +576,9 @@ function applyShared(s){
     if(path==='lists.sales')s.lists.sales=[...v];else if(path==='lists.insales')s.lists.insales=[...v];else s[path]=clone(v);s._shared.push(path)}
 }
 async function readShared(ask){
+  if(Store.mode==='fs'&&Store.root){try{const f=await(await Store.root.getFileHandle(SHARED_AUTO)).getFile();
+    if(S.sharedInfo&&S.sharedInfo.auto&&S.sharedInfo.mod===f.lastModified&&S.shared)return false;
+    const j=JSON.parse((await f.text()).replace(/^\uFEFF/,''));if(j&&j.app==='shared-settings'){S.shared=j;S.sharedInfo={name:SHARED_AUTO+'（中繼自動複製）',mod:f.lastModified,at:j.updatedAt||'',auto:true};if(S.set)applyShared(S.set);paintWho();return true}}catch(e){}}
   const h=await idb.get('shset');if(!h){S.shared=null;S.sharedInfo=null;return false}
   if(!await perm(h,'read',ask)){S.sharedInfo={name:h.name,err:'待授權'};return false}
   try{const f=await h.getFile();if(S.sharedInfo&&S.sharedInfo.mod===f.lastModified&&S.shared)return false;
@@ -576,16 +637,20 @@ function statusText(){
 function pendingCount(){const A=activeRecs();return A.filter(x=>x.u==='已收貨'||!x.confirmed).length+hints(A).length}
 function renderNav(){
   const n=S.rc||Object.keys(S.jobs).length?pendingCount():0;
-  const tabs=[['todo','待確認',n],['board','排程台'],['list','案件清單'],['kiosk','看板'],['wb','回寫預覽'],['set','設定']];
+  const tabs=[['todo','待確認',n],['board','排程台'],['list','案件清單'],['kiosk','看板'],...(can('wb.view')?[['wb','回寫預覽']]:[]),...(setTabs().length?[['set','設定']]:[])];
   $('#nav').innerHTML=tabs.map(([k,l,c])=>`<button data-v="${k}" class="${S.view===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('');
 }
 $('#nav').onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.v==='kiosk'){enterKiosk();return}S.view=b.dataset.v;ls.set('rs1_view',S.view);render()};
 $('#btnReload').onclick=()=>reloadAll(true);
 function render(){
   if(S.kiosk){renderKiosk();return}
-  renderNav();
+  renderNav();paintWho();
   if(!S.rc&&!Object.keys(S.jobs).length&&S.view!=='set'){renderWelcome();return}
+  if(S.view==='wb'&&!can('wb.view'))S.view='board';
+  if(S.view==='set'&&!setTabs().length)S.view='board';
   ({todo:renderTodo,board:renderBoard,list:renderList,wb:renderWB,set:renderSet}[S.view]||renderBoard)();
+  if(!can('sched.edit'))$('#main').querySelectorAll('[draggable="true"]').forEach(el=>el.setAttribute('draggable','false'));
+  paintWho();
 }
 function renderWelcome(){
   $('#main').innerHTML=`<div class="panel" style="max-width:760px;margin:30px auto"><div class="ph"><h2>開始使用</h2></div><div class="pb">
@@ -745,6 +810,7 @@ function bindPool(){
 }
 /* 拖到另一張卡上 = 插到它前面（同一組重新編號，取代「工業維修排序」） */
 async function reorder(ref,beforeRef){
+  if(!need('sched.edit'))return;
   const items=poolItems();const a=items.find(x=>x.wo===ref),b=items.find(x=>x.wo===beforeRef);if(!a||!b)return;
   const grp=items.filter(x=>x.u===b.u&&!x.hold&&!x.matOn&&x.wo!==ref);
   const i=grp.findIndex(x=>x.wo===beforeRef);grp.splice(i<0?grp.length:i,0,a);
@@ -804,6 +870,7 @@ function renderGrid(){
   });
 }
 async function copyPrevDay(){
+  if(!need('sched.edit'))return;
   let p=addD(S.day,-1);if(parseD(p).getDay()===0)p=addD(p,-1);await getPlan(p);
   const src=planEntries(p);const cur=planEntries(S.day);let n=0;
   for(const e of src){const info=refInfo(e.ref);if(info.task?info.done:(!info.x||info.x.closed))continue;
@@ -885,7 +952,7 @@ function taskDialog(t){
    <div class="df"><button class="btn" data-x>取消</button><button class="btn pri" id="tOk">儲存</button></div>`,d=>{
     $('#tOk').onclick=async()=>{const n={...t,cat:$('#tCat').value,title:$('#tTitle').value.trim(),cust:$('#tCust').value.trim(),model:$('#tModel').value.trim(),note:$('#tNote').value.trim(),done:$('#tDone').checked,updatedAt:Date.now()};
       if(!n.title){toast('請填工作名稱');return}
-      try{await Store.write('tasks/'+n.id+'.json',n);S.tasks[n.id]=n;scheduleKiosk();d.close();render()}catch(e){toast('儲存失敗：'+e.message)}};
+      if(!need('task.edit'))return;try{await Store.write('tasks/'+n.id+'.json',n);S.tasks[n.id]=n;scheduleKiosk();d.close();render()}catch(e){toast('儲存失敗：'+e.message)}};
   });
 }
 
@@ -978,7 +1045,7 @@ function kioskSnapshot(){
     waiting:A.filter(x=>S.set.uSched.includes(x.u)&&!x.hold&&!x.matOn&&!allAssigns(x.wo).some(a=>a.d>=today())).sort((a,b)=>(b.age||0)-(a.age||0)).slice(0,30).map(sm)};
 }
 let _kT=null;
-function scheduleKiosk(){if(Store.mode!=='fs')return;clearTimeout(_kT);_kT=setTimeout(async()=>{try{await Store.write('rs_kiosk.json',kioskSnapshot())}catch(e){console.warn('看板檔寫入失敗',e)}},1500)}
+function scheduleKiosk(){if(Store.mode!=='fs'||!can('sched.edit'))return;clearTimeout(_kT);_kT=setTimeout(async()=>{try{await Store.write('rs_kiosk.json',kioskSnapshot())}catch(e){console.warn('看板檔寫入失敗',e)}},1500)}
 function downloadKiosk(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(kioskSnapshot(),null,1)],{type:'application/json'}));a.download='rs_kiosk.json';a.click()}
 
 /* ================= 看板 ================= */
@@ -1014,63 +1081,81 @@ function startTimers(){if(timers)return;timers=true;setInterval(tick,15000);
       if(S.kiosk||!['todo','list'].includes(S.view)||!document.activeElement||document.activeElement===document.body)render()}catch(e){console.warn(e)}},S.kiosk?60000:90000)}
 
 /* ================= 設定 ================= */
+const SET_TABS=[['src','資料來源','set.src'],['gen','排程設定','set.gen'],['people','人員','set.gen'],['shop','站別／時段','set.gen'],['data','匯出／匯入','set.data'],['perm','權限','set.perm']];
+function setTabs(){return SET_TABS.filter(t=>can(t[2]))}
 function renderSet(){
-  const s=S.set;const lst=a=>esc((a||[]).join('\n'));const dis=k=>(s._shared||[]).includes(k)?' disabled style="background:#eceeea;color:#55574f"':'';
-  $('#main').innerHTML=`
-  <div class="panel"><div class="ph"><h2>資料來源</h2></div><div class="pb">
-   <table class="t"><tr><th style="width:140px">項目</th><th>目前</th><th></th></tr>
+  const s=S.set;const lst=a=>esc((a||[]).join('\n'));const shd=k=>(s._shared||[]).includes(k);const dis=k=>shd(k)?' disabled style="background:#eceeea;color:#55574f"':'';
+  const tabs=setTabs();if(!tabs.find(t=>t[0]===S.stab))S.stab=tabs[0]?tabs[0][0]:'src';const tab=S.stab;
+  const lockNote=keys=>keys.some(shd)?'<div class="warnbox">🔒 灰色欄位由入口網站「共用設定」統一維護，這裡只能查看；要修改請到入口網站 → 共用設定。</div>':'';
+  const saveBar=`<div class="row" style="margin-bottom:10px"><button class="btn pri" id="sSave">儲存設定</button></div>`;
+  let body='';
+  if(tab==='src')body=`<table class="t"><tr><th style="width:140px">項目</th><th>目前</th><th></th></tr>
    <tr><td>排程資料存放</td><td>${Store.mode==='local'?'<b>本機試用</b>（只存在這台電腦的瀏覽器）':'<b>資料夾：'+esc(Store.root&&Store.root.name)+'</b>'}</td>
      <td><button class="btn sm" id="sLocal"${Store.mode==='local'?' disabled':''}>改用本機試用</button> <button class="btn sm pri" id="sFolder"${FSA?'':' disabled'}>選擇資料夾…</button></td></tr>
    <tr><td>RCPR</td><td>${S.rc?esc(S.rc.fileName)+' · 進行中 '+S.rc.rows.length+' / 全部 '+S.rc.total+' 筆 · 檔案時間 '+new Date(S.rc.mod).toLocaleString():'尚未讀取'}</td><td><button class="btn sm" data-a="rcpr">選擇檔案…</button></td></tr>
-   <tr><td>共用設定</td><td>${S.sharedInfo?esc(S.sharedInfo.name)+(S.sharedInfo.err?' · <span style="color:var(--red)">'+esc(S.sharedInfo.err)+'</span>':' · 入口網站儲存於 '+(S.sharedInfo.at?new Date(S.sharedInfo.at).toLocaleString():'—')+' · 管理：'+esc(SHARED_MAP.filter(m=>(s._shared||[]).includes(m[1])).map(m=>m[2]).join('、')||'（共用設定裡還沒有這些欄位）')):'未設定（站別、時段、工程師、業務由這裡自己管理）'}</td>
-     <td><button class="btn sm" id="sShPick">選擇 共用設定.json…</button>${S.sharedInfo?' <button class="btn sm" id="sShOff">取消</button>':''}</td></tr>
+   <tr><td>共用設定</td><td>${S.sharedInfo?esc(S.sharedInfo.name)+(S.sharedInfo.err?' · <span style="color:var(--red)">'+esc(S.sharedInfo.err)+'</span>':' · 入口網站儲存於 '+(S.sharedInfo.at?new Date(S.sharedInfo.at).toLocaleString():'—')+' · 管理：'+esc(SHARED_MAP.filter(m=>(s._shared||[]).includes(m[1])).map(m=>m[2]).join('、')||'（共用設定裡還沒有這些欄位）')+(authOn()?'、人員與 PIN':'')):'未設定（站別、時段、工程師、業務由這裡自己管理）'}</td>
+     <td>${S.sharedInfo&&S.sharedInfo.auto?'<span class="muted">自動讀取資料夾內的 '+SHARED_AUTO+'</span>':`<button class="btn sm" id="sShPick">選擇 共用設定.json…</button>${S.sharedInfo?' <button class="btn sm" id="sShOff">取消</button>':''}`}</td></tr>
    <tr><td>報工</td><td>${S.rep?esc(S.rep.fileName)+' · 工單維修 '+S.rep.count+' 筆 · 檔案時間 '+new Date(S.rep.mod).toLocaleString():'尚未讀取'}</td><td><button class="btn sm" data-a="rep">選擇檔案…</button></td></tr></table>
-   <p class="muted" style="font-size:12px">Addy 桌機：RCPR 與「報工_備份.json」都在 SharePoint &amp;職代用（OneDrive 同步）。看板 PC：報工讀本機 C:\\SvcShare\\10_報工\\報工_shared.json；排程資料夾用單向複製。<br>切換存放位置不會搬資料；要搬請用下方「匯出／匯入」。</p></div></div>
-  <div class="panel"><div class="ph"><h2>排程設定</h2><span class="sp"></span><button class="btn pri" id="sSave">儲存設定</button></div><div class="pb">
-   ${(s._shared||[]).length?'<div class="warnbox">灰色欄位由入口網站「共用設定」管理，要改請到入口網站。</div>':''}
-   <div class="cols4">
-    <div class="f"><label>工程師（一行一位，排程表列）</label><textarea class="in" rows="7" id="sEng"${dis('engineers')}>${lst(s.engineers)}</textarea>${S.rep&&S.rep.staff.length?`<span class="muted" style="font-size:12px">報工人員：${esc(S.rep.staff.join('、'))}</span>`:''}</div>
-    <div class="f"><label>站別（順序＝流程，需與報工站別同名）</label><textarea class="in" rows="7" id="sSt"${dis('stations')}>${lst(s.stations)}</textarea></div>
+   <p class="muted" style="font-size:12px">共用設定：資料夾裡有中繼複製來的「${SHARED_AUTO}」時自動讀取，不用另外選檔。報工請選 OneDrive 上 Service System\\10_報工\\報工_shared.json（Wi-Fi 也讀得到）。<br>切換存放位置不會搬資料；要搬請用「匯出／匯入」。</p>`;
+  else if(tab==='gen')body=saveBar+`<div class="cols4">
     <div class="f"><label>報工站別 → Z 值（站別=Z）</label><textarea class="in" rows="7" id="sZ">${esc(Object.entries(s.zMap).map(([a,b])=>a+'='+b).join('\n'))}</textarea></div>
     <div class="f"><label>排程週顯示天數</label><select class="in" id="sDays"><option value="5"${s.days==5?' selected':''}>5（一～五）</option><option value="6"${s.days!=5?' selected':''}>6（一～六）</option></select>
-     <label style="margin-top:8px">Z：無報工／待料／完工</label><input class="in" id="sZw" value="${esc(s.zWait)}"><input class="in" id="sZm" value="${esc(s.zMat)}" style="margin-top:4px"><input class="in" id="sZd" value="${esc(s.zDone)}" style="margin-top:4px"></div></div>
-   <div class="cols4">
+     <label style="margin-top:8px">Z：無報工／待料／完工</label><input class="in" id="sZw" value="${esc(s.zWait)}"><input class="in" id="sZm" value="${esc(s.zMat)}" style="margin-top:4px"><input class="in" id="sZd" value="${esc(s.zDone)}" style="margin-top:4px"></div>
     <div class="f"><label>U 流程值（一行一個）</label><textarea class="in" rows="9" id="sU">${lst(s.uFlow)}</textarea></div>
-    <div class="f"><label>U：結束（不再顯示）</label><textarea class="in" rows="3" id="sUc">${lst(s.uClosed)}</textarea><label>U：進排程台</label><textarea class="in" rows="3" id="sUs">${lst(s.uSched)}</textarea></div>
-    <div class="f"><label>Q Type</label><textarea class="in" rows="3" id="sLt">${lst(s.lists.type)}</textarea><label>R 保固判定</label><textarea class="in" rows="5" id="sLw">${lst(s.lists.wty)}</textarea></div>
-    <div class="f"><label>S 外勤業務</label><textarea class="in" rows="5" id="sLs"${dis('lists.sales')}>${lst(s.lists.sales)}</textarea><label>T 內勤業務</label><textarea class="in" rows="3" id="sLi"${dis('lists.insales')}>${lst(s.lists.insales)}</textarea></div></div>
+    <div class="f"><label>U：結束（不再顯示）</label><textarea class="in" rows="3" id="sUc">${lst(s.uClosed)}</textarea><label>U：進排程台</label><textarea class="in" rows="3" id="sUs">${lst(s.uSched)}</textarea></div></div>
    <div class="cols4">
-    <div class="f"><label>時段（名稱=開始-結束，與報工相同）</label><textarea class="in" rows="5" id="sSh"${dis('shifts')}>${esc(Object.entries(s.shifts||{}).map(([n,v])=>n+'='+v[0]+'-'+v[1]).join('\n'))}</textarea></div>
-    <div class="f"><label>各站預設天數（站別=天數，0.5 為單位；留白＝1 天）</label><textarea class="in" rows="5" id="sSd" placeholder="檢整組裝=2">${esc(Object.entries(s.stDays||{}).map(([n,v])=>n+'='+v).join('\n'))}</textarea></div>
-    <div class="f"><label>休息（工時自動扣除）</label><textarea class="in" rows="5" id="sBr"${dis('breaks')}>${esc(Object.entries(s.breaks||{}).map(([n,v])=>n+'='+v[0]+'-'+v[1]).join('\n'))}</textarea></div></div>
-  </div></div>
-  <div class="panel"><div class="ph"><h2>匯出／匯入</h2></div><div class="pb row">
-   <button class="btn" id="sExp">匯出全部資料 JSON</button><button class="btn" id="sKio" title="看板主機讀的檔；資料夾模式會自動寫入">下載看板檔 rs_kiosk.json</button><button class="btn" id="sImp">匯入 JSON（合併）</button><span class="sp"></span>
-   <button class="btn dng" id="sClr"${Store.mode==='local'?'':' disabled'}>清除本機試用資料</button></div></div>
-  <p class="muted" style="font-size:12px">v${APPVER}</p>`;
+    <div class="f"><label>Q Type</label><textarea class="in" rows="3" id="sLt">${lst(s.lists.type)}</textarea></div>
+    <div class="f"><label>R 保固判定</label><textarea class="in" rows="5" id="sLw">${lst(s.lists.wty)}</textarea></div>
+    <div class="f"><label>各站預設天數（站別=天數，0.5 為單位；留白＝1 天）</label><textarea class="in" rows="5" id="sSd" placeholder="檢整組裝=2">${esc(Object.entries(s.stDays||{}).map(([n,v])=>n+'='+v).join('\n'))}</textarea></div></div>`;
+  else if(tab==='people')body=lockNote(['engineers','lists.sales','lists.insales'])+(['engineers','lists.sales','lists.insales'].every(shd)?'':saveBar)+`<div class="cols4">
+    <div class="f"><label>工程師（一行一位，排程表列）</label><textarea class="in" rows="9" id="sEng"${dis('engineers')}>${lst(s.engineers)}</textarea>${S.rep&&S.rep.staff.length?`<span class="muted" style="font-size:12px">報工人員：${esc(S.rep.staff.join('、'))}</span>`:''}</div>
+    <div class="f"><label>S 外勤業務</label><textarea class="in" rows="9" id="sLs"${dis('lists.sales')}>${lst(s.lists.sales)}</textarea></div>
+    <div class="f"><label>T 內勤業務</label><textarea class="in" rows="9" id="sLi"${dis('lists.insales')}>${lst(s.lists.insales)}</textarea></div>
+    <div class="f"><label>可登入的人（共用設定）</label><div class="muted" style="font-size:13px;line-height:1.8">${authOn()?RS_ROLES.filter(r=>!['admin','guest'].includes(r[0])).map(([r,n])=>{const L=people().filter(p=>roleOf(p)===r);return `<b>${n}</b>：${L.length?L.map(p=>esc(p.name)+(p.pin||(s.pins||{})[p.name]?'':'（未設 PIN）')).join('、'):'—'}`}).join('<br>'):'共用設定還沒有人員名單，目前不需登入、所有人都能編輯。到入口網站 → 共用設定 →「人員」建立後自動啟用。'}</div>
+     <p class="muted" style="font-size:12px">排程身分＝人員頁勾「Repair Shop 排程」；工程師＝「Repair Shop 工程師」；業務＝外勤或內勤業務。</p></div></div>`;
+  else if(tab==='shop')body=lockNote(['stations','shifts','breaks'])+(['stations','shifts','breaks'].every(shd)?'':saveBar)+`<div class="cols4">
+    <div class="f"><label>站別（順序＝流程，需與報工站別同名）</label><textarea class="in" rows="8" id="sSt"${dis('stations')}>${lst(s.stations)}</textarea></div>
+    <div class="f"><label>時段（名稱=開始-結束，與報工相同）</label><textarea class="in" rows="8" id="sSh"${dis('shifts')}>${esc(Object.entries(s.shifts||{}).map(([n,v])=>n+'='+v[0]+'-'+v[1]).join('\n'))}</textarea></div>
+    <div class="f"><label>休息（工時自動扣除）</label><textarea class="in" rows="8" id="sBr"${dis('breaks')}>${esc(Object.entries(s.breaks||{}).map(([n,v])=>n+'='+v[0]+'-'+v[1]).join('\n'))}</textarea></div></div>`;
+  else if(tab==='data')body=`<div class="row"><button class="btn" id="sExp">匯出全部資料 JSON</button><button class="btn" id="sKio" title="看板主機讀的檔；資料夾模式會自動寫入">下載看板檔 rs_kiosk.json</button><button class="btn" id="sImp">匯入 JSON（合併）</button><span class="sp"></span>
+   <button class="btn dng" id="sClr"${Store.mode==='local'?'':' disabled'}>清除本機試用資料</button></div>`;
+  else if(tab==='perm')body=`<p class="muted" style="font-size:12px">「設定：權限」固定只有管理者能改。${authOn()?'':'<b>目前共用設定還沒有人員名單，權限尚未啟用。</b>'}</p>
+   <div style="overflow:auto"><table class="t ptbl"><tr><th>功能</th><th>說明</th>${RS_ROLES.map(r=>`<th>${r[1]}</th>`).join('')}</tr>
+   ${PERM_DEF.map(([k,l,dsc])=>`<tr><td>${esc(l)}</td><td class="muted" style="font-size:12px;white-space:normal">${esc(dsc)}</td>${RS_ROLES.map(([r])=>{const v=((s.perms||{})[k]||{})[r]||PERM_DEF.find(x=>x[0]===k)[3][RS_ROLES.findIndex(x=>x[0]===r)];const fixed=r==='admin'&&k.startsWith('set.');return `<td><select data-pk="${k}" data-pr="${r}"${fixed?' disabled':''}>${PV.map(([pv,pl])=>`<option value="${pv}"${v===pv?' selected':''}>${pl}</option>`).join('')}</select></td>`}).join('')}</tr>`).join('')}</table></div>
+   <div class="row" style="margin-top:10px"><button class="btn" id="pDef">恢復預設值</button><span class="sp"></span><button class="btn pri" id="pSave">儲存權限</button></div>`;
+  $('#main').innerHTML=`<div class="panel"><div class="ph"><h2>設定</h2><span class="sp"></span><span class="muted">資料夾：${Store.mode==='local'?'本機試用':esc(Store.root&&Store.root.name)}｜版本 ${APPVER}</span></div><div class="pb">
+   <div class="stabs">${tabs.map(([k,l])=>`<button data-st="${k}" class="${tab===k?'on':''}">${l}${(k==='people'&&['engineers','lists.sales','lists.insales'].some(shd))||(k==='shop'&&['stations','shifts','breaks'].some(shd))?' 🔒':''}</button>`).join('')}</div>${body}</div></div>`;
+  $('#main').querySelectorAll('[data-st]').forEach(b=>b.onclick=()=>{S.stab=b.dataset.st;renderSet()});
   bindSrcButtons($('#main'));
+  const on=(id,f)=>{const e=$(id);if(e)e.onclick=f};
   const L=id=>$(id).value.split('\n').map(x=>x.trim()).filter(Boolean);
-  $('#sSave').onclick=async()=>{const z={};L('#sZ').forEach(l=>{const i=l.indexOf('=');if(i>0)z[l.slice(0,i).trim()]=l.slice(i+1).trim()});
-    Object.assign(s,{engineers:L('#sEng'),stations:L('#sSt'),zMap:z,days:+$('#sDays').value,zWait:$('#sZw').value.trim(),zMat:$('#sZm').value.trim(),zDone:$('#sZd').value.trim(),
-      uFlow:L('#sU'),uClosed:L('#sUc'),uSched:L('#sUs')});
-    s.lists={type:L('#sLt'),wty:L('#sLw'),sales:L('#sLs'),insales:L('#sLi')};
+  const has=id=>{const e=$(id);return e&&!e.disabled};
+  on('#sSave',async()=>{
+    if($('#sZ')){const z={};L('#sZ').forEach(l=>{const i=l.indexOf('=');if(i>0)z[l.slice(0,i).trim()]=l.slice(i+1).trim()});
+      Object.assign(s,{zMap:z,days:+$('#sDays').value,zWait:$('#sZw').value.trim(),zMat:$('#sZm').value.trim(),zDone:$('#sZd').value.trim(),uFlow:L('#sU'),uClosed:L('#sUc'),uSched:L('#sUs')});
+      s.lists.type=L('#sLt');s.lists.wty=L('#sLw');
+      const sd={};for(const l of L('#sSd')){const m=l.match(/^(.+?)\s*=\s*(\d+(?:\.5)?|\.5)$/);if(!m){toast('預設天數格式錯誤：'+l+'（例：檢整組裝=2 或 噴漆塗層=0.5）');return}sd[m[1].trim()]=+m[2]}s.stDays=sd}
+    if(has('#sEng'))s.engineers=L('#sEng');if(has('#sLs'))s.lists.sales=L('#sLs');if(has('#sLi'))s.lists.insales=L('#sLi');
+    if(has('#sSt'))s.stations=L('#sSt');
     const TR=id=>{const o={};for(const l of L(id)){const m=l.match(/^(.+?)\s*=\s*(\d{1,2}:\d{2})\s*[-–~]\s*(\d{1,2}:\d{2})$/);if(!m){toast('格式錯誤：'+l);return null}o[m[1].trim()]=[m[2].padStart(5,'0'),m[3].padStart(5,'0')]}return o};
-    const sh=TR('#sSh'),br=TR('#sBr');if(!sh||!br)return;
-    const sd={};for(const l of L('#sSd')){const m=l.match(/^(.+?)\s*=\s*(\d+(?:\.5)?|\.5)$/);if(!m){toast('預設天數格式錯誤：'+l+'（例：檢整組裝=2 或 噴漆塗層=0.5）');return}sd[m[1].trim()]=+m[2]}s.stDays=sd;if(!Object.keys(sh).length){toast('至少要有一個時段');return}s.shifts=sh;s.breaks=br;
-    try{await saveSettings();toast('已儲存設定');render()}catch(e){toast('儲存失敗：'+e.message)}};
-  $('#sLocal').onclick=async()=>{Store.mode='local';Store.root=null;await idb.del('root');ls.set('rs1_mode','local');await reloadAll(false)};
-  $('#sFolder').onclick=async()=>{try{const d=await showDirectoryPicker({id:'rs1-root',mode:'readwrite'});Store.mode='fs';Store.root=d;Store.mods={};S.jobs={};S.tasks={};S.plans={};await idb.set('root',d);ls.set('rs1_mode','fs');
-      if(!await Store.read('settings.json'))await Store.write('settings.json',S.set);await reloadAll(true);toast('已連接資料夾 '+d.name)}catch(e){if(e.name!=='AbortError')toast('無法開啟資料夾：'+e.message)}};
-  $('#sExp').onclick=()=>{const o={app:'repair-shop',ver:APPVER,at:nowStr(),settings:S.set,jobs:S.jobs,tasks:S.tasks,plans:S.plans};
-    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(o)],{type:'application/json'}));a.download='RepairShop_匯出_'+today()+'.json';a.click()};
-  $('#sImp').onclick=()=>$('#fSet').click();$('#sKio').onclick=downloadKiosk;
-  $('#sShPick').onclick=async()=>{if(!('showOpenFilePicker' in window)){toast('請用電腦版 Edge 或 Chrome');return}
+    if(has('#sSh')){const sh=TR('#sSh');if(!sh)return;if(!Object.keys(sh).length){toast('至少要有一個時段');return}s.shifts=sh}
+    if(has('#sBr')){const br=TR('#sBr');if(!br)return;s.breaks=br}
+    try{await saveSettings();applyShared(s);toast('已儲存設定');render()}catch(e){toast('儲存失敗：'+e.message)}});
+  on('#pSave',async()=>{const pm={};$('#main').querySelectorAll('[data-pk]').forEach(el=>{(pm[el.dataset.pk]=pm[el.dataset.pk]||{})[el.dataset.pr]=el.value});s.perms=pm;try{await saveSettings();toast('權限已儲存');render()}catch(e){toast('儲存失敗：'+e.message)}});
+  on('#pDef',()=>{if(!confirm('權限恢復預設值？（按「儲存權限」後生效）'))return;s.perms={};renderSet()});
+  on('#sLocal',async()=>{Store.mode='local';Store.root=null;await idb.del('root');ls.set('rs1_mode','local');await reloadAll(false)});
+  on('#sFolder',async()=>{try{const d=await showDirectoryPicker({id:'rs1-root',mode:'readwrite'});Store.mode='fs';Store.root=d;Store.mods={};S.jobs={};S.tasks={};S.plans={};await idb.set('root',d);ls.set('rs1_mode','fs');
+      if(!await Store.read('settings.json'))await Store.write('settings.json',S.set);await reloadAll(true);toast('已連接資料夾 '+d.name)}catch(e){if(e.name!=='AbortError')toast('無法開啟資料夾：'+e.message)}});
+  on('#sExp',()=>{if(!need('export'))return;const o={app:'repair-shop',ver:APPVER,at:nowStr(),settings:S.set,jobs:S.jobs,tasks:S.tasks,plans:S.plans};
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(o)],{type:'application/json'}));a.download='RepairShop_匯出_'+today()+'.json';a.click()});
+  on('#sImp',()=>$('#fSet').click());on('#sKio',()=>{if(need('export'))downloadKiosk()});
+  on('#sShPick',async()=>{if(!('showOpenFilePicker' in window)){toast('請用電腦版 Edge 或 Chrome');return}
     try{const[h]=await showOpenFilePicker({id:'rs1-shset',types:[{description:'共用設定',accept:{'application/json':['.json']}}]});
-      const j=JSON.parse((await(await h.getFile()).text()).replace(/^\uFEFF/,''));if(!j||j.app!=='shared-settings'){toast('「'+h.name+'」不是入口網站的共用設定檔');return}
-      await idb.set('shset',h);S.sharedInfo=null;await readShared(true);toast('已套用共用設定');render()}catch(e){if(e.name!=='AbortError')toast('讀取失敗：'+e.message)}};
-  const so=$('#sShOff');if(so)so.onclick=async()=>{await idb.del('shset');S.shared=null;S.sharedInfo=null;S.set=normSettings(await Store.read('settings.json'));render()};
-  $('#sClr').onclick=()=>{if(!confirm('清除這台電腦瀏覽器裡的所有試用資料（排程、狀態、設定）？RCPR 不受影響。'))return;
-    Object.keys(localStorage).filter(k=>k.startsWith('rs1')).forEach(k=>localStorage.removeItem(k));location.reload()};
+      const j=JSON.parse((await(await h.getFile()).text()).replace(/^﻿/,''));if(!j||j.app!=='shared-settings'){toast('「'+h.name+'」不是入口網站的共用設定檔');return}
+      await idb.set('shset',h);S.sharedInfo=null;await readShared(true);toast('已套用共用設定');render()}catch(e){if(e.name!=='AbortError')toast('讀取失敗：'+e.message)}});
+  on('#sShOff',async()=>{await idb.del('shset');S.shared=null;S.sharedInfo=null;S.set=normSettings(await Store.read('settings.json'));render()});
+  on('#sClr',()=>{if(!confirm('清除這台電腦瀏覽器裡的所有試用資料（排程、狀態、設定）？RCPR 不受影響。'))return;
+    Object.keys(localStorage).filter(k=>k.startsWith('rs1')).forEach(k=>localStorage.removeItem(k));location.reload()});
 }
 $('#fSet').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
   try{const o=JSON.parse(await f.text());if(o.app!=='repair-shop')throw new Error('不是本系統的匯出檔');
