@@ -119,6 +119,11 @@ table.g td.dragover{background:#e8f1fb;outline:2px dashed var(--accent);outline-
 .prog span.prev{border-style:dashed}
 .kc.pre{opacity:.6;background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.25) 0 8px,transparent 8px 16px)}
 .chip.hold{filter:grayscale(.8);opacity:.7}
+.chip.miss{outline:2px dashed #d6383a;outline-offset:-2px}
+.chip .ms{position:absolute;right:4px;top:2px;font-size:11px;background:#fff;color:#d6383a;border-radius:8px;padding:0 4px;font-weight:700}
+.chip.ins{background:#fff;color:#a14d8f;border:1.5px dashed #a14d8f;cursor:pointer}
+.chip.ins b{color:#a14d8f}
+.diffact{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.diffact input[type=date]{height:28px}
 .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--ink2)}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 /* 看板 */
@@ -152,7 +157,7 @@ table.kt td{height:96px}
 </head>
 <body>
 <header>
-  <h1>Repair Shop 排程系統<small>v0.3.0</small></h1>
+  <h1>Repair Shop 排程系統<small>v0.4.0</small></h1>
   <nav id="nav"></nav>
   <div class="sync"><button class="hbtn" id="btnWho" style="display:none" title="切換身分">選擇身分</button><span class="dot" id="sdot"></span><span id="slbl">未載入</span><button class="hbtn" id="btnReload" title="重新讀取 RCPR、報工與排程資料">↻ 重新讀取</button></div>
 </header>
@@ -191,7 +196,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 <script>
 'use strict';
 /* ================= 常數 ================= */
-const APPVER='0.3.0';
+const APPVER='0.4.0';
 const WD=['日','一','二','三','四','五','六'];
 const SCOLORS=['var(--s0)','var(--s1)','var(--s2)','var(--s3)','var(--s4)','#7a7d75','#a14d8f'];
 const UCOLORS={'已收貨':'#9a9890','待拆解':'#eb6834','報告彙整':'#c98a00','報價中':'#6250d6','待維修':'#2a78d6','維修中':'#1baf7a','退修':'#7a7d75','報廢':'#55574f','OFF':'#16324f','待料':'#d6383a','HOLD':'#55574f'};
@@ -377,11 +382,11 @@ function parseRCPR(buf,meta){
 function workMin(a,b){let m=hm(b)-hm(a);for(const[x,y]of[['12:00','13:00'],['17:30','18:00']]){const o=Math.min(hm(b),hm(y))-Math.max(hm(a),hm(x));if(o>0)m-=o}return Math.max(0,m)}
 function parseRep(obj,meta){
   const recs=(obj.records||[]).filter(r=>!r.deleted&&/^WS/.test(r.type||''));
-  const byWo={},byDay={},noWo=[];
+  const byWo={},byDay={},noWo=[],days={};
   for(const r of recs){
     const wo=String(r.wo||'').trim().toUpperCase();const h=Math.round(workMin(r.start,r.end)/6)/10;
     const e={date:r.date,staff:r.staff,station:r.station||'',start:r.start,end:r.end,h,note:r.note||''};
-    if(/^WO\d{13}$/.test(wo)){(byWo[wo]=byWo[wo]||[]).push(e);const k=r.date+'|'+r.staff;(byDay[k]=byDay[k]||[]);if(!byDay[k].includes(wo))byDay[k].push(wo)}
+    if(/^WO\d{13}$/.test(wo)){(byWo[wo]=byWo[wo]||[]).push(e);const k=r.date+'|'+r.staff;(byDay[k]=byDay[k]||[]);if(!byDay[k].includes(wo))byDay[k].push(wo);(days[k]=days[k]||[]).push({wo,station:e.station,start:e.start,end:e.end,h:e.h,unpl:!!r.unpl})}
     else noWo.push({...e,wo:r.wo||'',model:r.modelNo||r.model||''});
   }
   const sum={};
@@ -391,7 +396,7 @@ function parseRep(obj,meta){
     sum[wo]={list,last:last.station,lastDate:last.date,first:list[0].date,hours:Math.round(tot*10)/10,st};
   }
   noWo.sort((a,b)=>b.date.localeCompare(a.date));
-  return{byWo:sum,byDay,noWo:noWo.slice(0,60),staff:(obj.master&&obj.master.staff)||[],count:recs.length,fileName:meta.name,mod:meta.mod,loadedAt:Date.now()};
+  return{byWo:sum,byDay,days,noWo:noWo.slice(0,60),staff:(obj.master&&obj.master.staff)||[],count:recs.length,fileName:meta.name,mod:meta.mod,loadedAt:Date.now()};
 }
 /* 讀檔：優先用記住的檔案（Edge/Chrome），否則用這次手動選的檔 */
 async function readSource(kind,ask){
@@ -406,7 +411,7 @@ async function loadRCPR(src){
   mergeLists();await syncSnaps();return true;
 }
 async function loadRep(src){
-  if(!src)return false;if(S.rep&&S.rep.mod===src.mod&&S.rep.fileName===src.name)return false;
+  if(!src)return false;if(S.rep&&S.rep.mod===src.mod&&S.rep.fileName===src.name&&S.rep.days)return false;
   const obj=JSON.parse(src.text.replace(/^\uFEFF/,''));if(!Array.isArray(obj.records))throw new Error('不是報工資料檔（找不到 records）');
   S.rep=parseRep(obj,src);ls.set('rs1c_rep',S.rep);return true;
 }
@@ -637,7 +642,8 @@ function statusText(){
 function pendingCount(){const A=activeRecs();return A.filter(x=>x.u==='已收貨'||!x.confirmed).length+hints(A).length}
 function renderNav(){
   const n=S.rc||Object.keys(S.jobs).length?pendingCount():0;
-  const tabs=[['todo','待確認',n],['board','排程台'],['list','案件清單'],['kiosk','看板'],...(can('wb.view')?[['wb','回寫預覽']]:[]),...(setTabs().length?[['set','設定']]:[])];
+  const dn=S.rep?diffCount():0;
+  const tabs=[['todo','待確認',n],['board','排程台'],['diff','排程差異',dn],['list','案件清單'],['kiosk','看板'],...(can('wb.view')?[['wb','回寫預覽']]:[]),...(setTabs().length?[['set','設定']]:[])];
   $('#nav').innerHTML=tabs.map(([k,l,c])=>`<button data-v="${k}" class="${S.view===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('');
 }
 $('#nav').onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.v==='kiosk'){enterKiosk();return}S.view=b.dataset.v;ls.set('rs1_view',S.view);render()};
@@ -648,7 +654,7 @@ function render(){
   if(!S.rc&&!Object.keys(S.jobs).length&&S.view!=='set'){renderWelcome();return}
   if(S.view==='wb'&&!can('wb.view'))S.view='board';
   if(S.view==='set'&&!setTabs().length)S.view='board';
-  ({todo:renderTodo,board:renderBoard,list:renderList,wb:renderWB,set:renderSet}[S.view]||renderBoard)();
+  ({todo:renderTodo,board:renderBoard,diff:renderDiff,list:renderList,wb:renderWB,set:renderSet}[S.view]||renderBoard)();
   if(!can('sched.edit'))$('#main').querySelectorAll('[draggable="true"]').forEach(el=>el.setAttribute('draggable','false'));
   paintWho();
 }
@@ -821,9 +827,9 @@ function weekDays(){const n=S.set.days||6;return Array.from({length:n},(_,i)=>ad
 function chipHtml(e,day,staff,compact){
   const info=refInfo(e.ref);const st=e.station;const c=stColor(st);
   const ok=!info.task&&didWork(day,staff,e.ref);
-  const hold=info.x&&(info.x.hold||info.x.matOn);const pre=isPreEntry(e.ref,st);
-  return`<div class="chip${info.task?' task':''}${hold?' hold':''}${pre?' pre':''}" draggable="true" data-day="${e.bday||day}" data-key="${e.key}" data-id="${e.id}" data-ref="${e.ref}" style="--c:${c}" title="${esc((info.title||info.cust)+' '+info.model+' '+(info.task?'':e.ref)+' '+st+(e.note?' / '+e.note:''))}">
-   ${pre?'<span class="pt">預</span>':''}${compact?`<b>${esc(stShort(st))}</b> `:''}<b>${esc(info.task?info.title:info.cust)}</b>${e.parts>1?` <span class="s">${e.part}/${e.parts}</span>`:''}${timeLabel(tOf(e))?` <span class="s">${esc(timeLabel(tOf(e)))}</span>`:''}<br><span class="s">${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}</span>${ok?'<span class="ok" title="當天已有報工">✓</span>':''}</div>`;
+  const hold=info.x&&(info.x.hold||info.x.matOn);const pre=isPreEntry(e.ref,st);const miss=isMissed(e,day,staff);
+  return`<div class="chip${info.task?' task':''}${hold?' hold':''}${pre?' pre':''}${miss?' miss':''}" draggable="true" data-day="${e.bday||day}" data-key="${e.key}" data-id="${e.id}" data-ref="${e.ref}" style="--c:${c}" title="${esc((info.title||info.cust)+' '+info.model+' '+(info.task?'':e.ref)+' '+st+(e.note?' / '+e.note:''))}">
+   ${pre?'<span class="pt">預</span>':''}${compact?`<b>${esc(stShort(st))}</b> `:''}<b>${esc(info.task?info.title:info.cust)}</b>${e.parts>1?` <span class="s">${e.part}/${e.parts}</span>`:''}${timeLabel(tOf(e))?` <span class="s">${esc(timeLabel(tOf(e)))}</span>`:''}<br><span class="s">${esc(info.model)}${info.task?'':' · '+String(e.ref).slice(-5)}</span>${ok?'<span class="ok" title="當天已有報工">✓</span>':''}${miss?'<span class="ms" title="排了但當天沒有報工">⚠ 未執行</span>':''}</div>`;
 }
 function renderGrid(){
   const gp=$('#gridPanel');const isWeek=S.bview==='week';
@@ -832,17 +838,17 @@ function renderGrid(){
   if(isWeek){
     const days=weekDays();
     head=`<tr><th class="rh">工程師</th>${days.map(d=>`<th class="${d===tdy?'today':''}">${md(d)}（${wd(d)}）</th>`).join('')}</tr>`;
-    body=eng.map(n=>`<tr><td class="rh">${esc(n)}</td>${days.map(d=>{const es=planEntries(d).filter(e=>e.staff===n).sort((a,b)=>stIdx(a.station)-stIdx(b.station));return`<td data-day="${d}" data-staff="${esc(n)}" class="${parseD(d).getDay()===6?'wk':''}">${es.map(e=>chipHtml(e,d,n,true)).join('')}</td>`}).join('')}</tr>`).join('');
+    body=eng.map(n=>`<tr><td class="rh">${esc(n)}</td>${days.map(d=>{const es=planEntries(d).filter(e=>e.staff===n).sort((a,b)=>stIdx(a.station)-stIdx(b.station));return`<td data-day="${d}" data-staff="${esc(n)}" class="${parseD(d).getDay()===6?'wk':''}">${es.map(e=>chipHtml(e,d,n,true)).join('')}${unplannedOf(d,n).map(u=>insHtml(u,true)).join('')}</td>`}).join('')}</tr>`).join('');
   }else{
     const d=S.day;const es=planEntries(d);
     head=`<tr><th class="rh">工程師</th>${S.set.stations.map((s,i)=>`<th style="border-top:3px solid ${SCOLORS[i%SCOLORS.length]}">${esc(s)}</th>`).join('')}</tr>`;
-    body=eng.map(n=>`<tr><td class="rh">${esc(n)}</td>${S.set.stations.map(st=>`<td data-day="${d}" data-staff="${esc(n)}" data-st="${esc(st)}">${es.filter(e=>e.staff===n&&e.station===st).map(e=>chipHtml(e,d,n,false)).join('')}</td>`).join('')}</tr>`).join('');
+    body=eng.map(n=>`<tr><td class="rh">${esc(n)}</td>${S.set.stations.map(st=>`<td data-day="${d}" data-staff="${esc(n)}" data-st="${esc(st)}">${es.filter(e=>e.staff===n&&e.station===st).map(e=>chipHtml(e,d,n,false)).join('')}${unplannedOf(d,n).filter(u=>u.station===st).map(u=>insHtml(u,false)).join('')}</td>`).join('')}</tr>`).join('');
   }
   const title=isWeek?`${md(S.week)} ～ ${md(addD(S.week,(S.set.days||6)-1))}（${isoWeek(S.week).slice(5)}）`:`${S.day}（${wd(S.day)}）`;
   gp.innerHTML=`<div class="ph"><div class="row"><button class="btn sm${isWeek?' pri':''}" data-bv="week">週</button><button class="btn sm${isWeek?'':' pri'}" data-bv="day">日（WSS 格式）</button></div>
    <button class="btn sm" id="gPrev">◀</button><h2>${title}</h2><button class="btn sm" id="gNext">▶</button><button class="btn sm" id="gToday">今天</button>
    <span class="sp"></span>${isWeek?'':'<button class="btn sm" id="gCopy" title="把前一個工作日的排程複製到這天（只複製還在進行中的）">複製前一工作日</button>'}
-   <div class="legend">${S.set.stations.map((s,i)=>`<span><i style="background:${SCOLORS[i%SCOLORS.length]}"></i>${esc(s)}</span>`).join('')}<span>✓ 當天已報工</span></div></div>
+   <div class="legend">${S.set.stations.map((s,i)=>`<span><i style="background:${SCOLORS[i%SCOLORS.length]}"></i>${esc(s)}</span>`).join('')}<span>✓ 當天已報工</span><span style="color:#d6383a">⚠ 未執行</span><span style="color:#a14d8f">插單＝報了工但沒排</span></div></div>
    <div class="gridwrap"><table class="g"><thead>${head}</thead><tbody>${body}</tbody></table></div>
    <div class="pb muted" style="font-size:12px">把左邊卡片拖進格子排程；格子裡的卡片可拖到別格移動，拖回左邊清單＝移除；點卡片可改站別、時段或刪除。</div>`;
   gp.querySelectorAll('[data-bv]').forEach(b=>b.onclick=()=>{S.bview=b.dataset.bv;ls.set('rs1_bview',S.bview);renderGrid()});
@@ -850,7 +856,8 @@ function renderGrid(){
   $('#gPrev').onclick=()=>shift(-1);$('#gNext').onclick=()=>shift(1);
   $('#gToday').onclick=async()=>{S.week=mondayOf(today());S.day=today();await getPlan(S.day);renderGrid()};
   const cp=$('#gCopy');if(cp)cp.onclick=()=>copyPrevDay();
-  gp.querySelectorAll('.chip').forEach(c=>{
+  gp.querySelectorAll('.chip.ins').forEach(c=>c.onclick=e=>{e.stopPropagation();S.view='diff';ls.set('rs1_view','diff');render()});
+  gp.querySelectorAll('.chip:not(.ins)').forEach(c=>{
     c.ondragstart=e=>{e.stopPropagation();e.dataTransfer.setData('text/plain',JSON.stringify({k:'cell',day:c.dataset.day,key:c.dataset.key,id:c.dataset.id,ref:c.dataset.ref}))};
     c.onclick=e=>{e.stopPropagation();assignDialog(c.dataset.day,c.dataset.key,c.dataset.id)};
   });
@@ -993,6 +1000,49 @@ function jobDialog(wo){
   });
 }
 
+/* ================= 排程差異（排了沒報＝未執行；報了沒排＝插單）================= */
+const DIFF_DAYS=14;
+function endPassed(e,day){const t=today();if(day<t)return true;if(day>t)return false;const n=new Date();return hm(pad(n.getHours())+':'+pad(n.getMinutes()))>=hm(tOf(e).end)}
+function isMissed(e,day,staff){if(String(e.ref).startsWith('T')||e.ack)return false;if(isPreEntry(e.ref,e.station))return false;
+  if(!S.rep||day<addD(today(),-DIFF_DAYS))return false;return endPassed(e,day)&&!didWork(day,staff,e.ref)}
+function ignKey(day,staff,u){return [day,staff,u.wo,u.start].join('|')}
+function isIgnored(day,staff,u){const p=S.plans[isoWeek(day)];return!!(p&&(p.ign||[]).includes(ignKey(day,staff,u)))}
+function unplannedOf(day,staff){if(!S.rep||!S.rep.days)return[];const L=S.rep.days[day+'|'+staff]||[];if(!L.length)return[];
+  const pl=new Set(planEntries(day).filter(e=>e.staff===staff).map(e=>e.ref));
+  return L.filter(u=>!pl.has(u.wo)&&!isIgnored(day,staff,u)).map(u=>({...u,day,staff}))}
+function insHtml(u,compact){const x=rec(u.wo);return`<div class="chip ins" title="${esc(u.wo+' '+(x?x.cust+' '+x.model:'')+' '+u.station+' '+u.start+'–'+u.end)}">${compact?`<b>${esc(stShort(u.station))}</b> `:''}<b>插單</b> ${esc(x?x.cust:u.wo.slice(-7))} <span class="s">${esc(u.start)}–${esc(u.end)}</span></div>`}
+// 起算日：排程系統開始有排程的第一天（之前的報工不算插單）
+function firstPlanDay(){let m='';for(const p of Object.values(S.plans))for(const k of Object.keys(p.cells||{})){const d=k.split('|')[0];if(!m||d<m)m=d}return m}
+function diffWindow(){const t=today(),f=firstPlanDay(),out=[];if(!f)return out;for(let i=DIFF_DAYS;i>=0;i--){const d=addD(t,-i);if(isWork(d)&&d>=f)out.push(d)}return out}
+function diffData(){const miss=[],ins=[];
+  for(const d of diffWindow()){for(const e of planEntries(d))if(isMissed(e,d,e.staff))miss.push({e,d});
+    for(const n of S.set.engineers)for(const u of unplannedOf(d,n))ins.push(u)}
+  return{miss,ins}}
+function diffCount(){try{const{miss,ins}=diffData();return miss.length+ins.length}catch(e){return 0}}
+async function loadDiffPlans(){const t=today();for(let i=DIFF_DAYS;i>=0;i-=7)await getPlan(addD(t,-i));await getPlan(t);await getPlan(nextWork(t))}
+async function renderDiff(){
+  await loadDiffPlans();const{miss,ins}=diffData();const ed=can('sched.edit');const def=isWork(today())?today():nextWork(today());
+  const row=(x)=>{const i=refInfo(x.e.ref),t=tOf(x.e),multi=x.e.parts>1;
+    return`<tr><td>${md(x.d)}（${wd(x.d)}）</td><td>${esc(x.e.staff)}</td><td>${esc(x.e.station)}</td><td>${esc(i.cust)} <span class="muted">${esc(i.model)}</span><br><span class="muted">${esc(x.e.ref)}</span></td><td>${esc(t.start)}–${esc(t.end)}${multi?` <span class="muted">${x.e.part}/${x.e.parts}</span>`:''}</td>
+     <td>${ed?`<div class="diffact">${multi?'<span class="muted">多天排程</span>':`<input type="date" data-mv="${x.e.id}" value="${def}"><button class="btn sm pri" data-mvgo="${x.e.id}" data-day="${x.e.bday||x.d}" data-key="${esc(x.e.key)}">順延</button>`}<button class="btn sm" data-open="${x.e.id}" data-day="${x.e.bday||x.d}" data-key="${esc(x.e.key)}">開啟</button><button class="btn sm" data-ack="${x.e.id}" data-day="${x.e.bday||x.d}" data-key="${esc(x.e.key)}">已處理</button></div>`:''}</td></tr>`};
+  const row2=(u,k)=>{const x=rec(u.wo);return`<tr><td>${md(u.day)}（${wd(u.day)}）</td><td>${esc(u.staff)}</td><td>${esc(u.station)}</td><td>${esc(x?x.cust:'')} <span class="muted">${esc(x?x.model:'')}</span><br><span class="muted">${esc(u.wo)}</span></td><td>${esc(u.start)}–${esc(u.end)} <span class="muted">${u.h}h</span></td>
+     <td>${ed?`<div class="diffact"><button class="btn sm pri" data-add="${k}">補入排程</button><button class="btn sm" data-ign="${k}">忽略</button></div>`:''}</td></tr>`};
+  $('#main').innerHTML=`<div class="panel"><div class="ph"><h2>排程差異</h2><span class="muted">最近 ${DIFF_DAYS} 天 · 以報工為實績，排程不會自動改，由排程人員確認</span>${S.rep?'':'<span class="tag warn">尚未讀到報工檔</span>'}</div>
+   <div class="pb"><h3 style="margin:4px 0">⚠ 未執行：排了但當天沒有報工（${miss.length}）</h3>
+   ${miss.length?`<div style="overflow:auto"><table class="t"><tr><th>排定日</th><th>工程師</th><th>站別</th><th>客戶／WO</th><th>時段</th><th>處理</th></tr>${miss.map(row).join('')}</table></div>`:'<p class="muted">沒有</p>'}
+   <p class="muted" style="font-size:12px">「順延」＝把這筆排程移到選的日期（同一位工程師、同一站）；「已處理」＝不再列出（例如已在別天補做、或決定取消）。預排（報價確認前）的不列入。</p></div>
+   <div class="pb"><h3 style="margin:4px 0">插單：報了工但沒有排（${ins.length}）</h3>
+   ${ins.length?`<div style="overflow:auto"><table class="t"><tr><th>報工日</th><th>工程師</th><th>站別</th><th>客戶／WO</th><th>報工時間</th><th>處理</th></tr>${ins.map(row2).join('')}</table></div>`:'<p class="muted">沒有</p>'}
+   <p class="muted" style="font-size:12px">「補入排程」＝在那天補一筆同樣的排程，讓排程和實績一致；「忽略」＝不補，只是不再列出。</p></div></div>`;
+  const M_=$('#main');
+  const find=async(day,key,id)=>{const p=await getPlan(day);return(p.cells[key]||[]).find(x=>x.id===id)};
+  M_.querySelectorAll('[data-mvgo]').forEach(b=>b.onclick=async()=>{const id=b.dataset.mvgo,to=M_.querySelector(`[data-mv="${id}"]`).value;if(!to){toast('請選日期');return}
+    const[d0,staff,st]=b.dataset.key.split('|');try{await moveAssign(b.dataset.day,b.dataset.key,id,to,staff,st);toast('已順延到 '+md(to));render()}catch(e){toast('儲存失敗：'+e.message)}});
+  M_.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>assignDialog(b.dataset.day,b.dataset.key,b.dataset.open));
+  M_.querySelectorAll('[data-ack]').forEach(b=>b.onclick=async()=>{const e=await find(b.dataset.day,b.dataset.key,b.dataset.ack);if(!e)return;e.ack=Date.now();S._pv=(S._pv||0)+1;await savePlan(b.dataset.day);toast('已標為處理');render()});
+  M_.querySelectorAll('[data-add]').forEach(b=>b.onclick=async()=>{const u=ins[+b.dataset.add];try{await addAssign(u.day,u.staff,u.station||S.set.stations[0],u.wo,{shift:'',start:u.start,end:u.end},'補入（插單）');toast('已補入排程');render()}catch(e){toast('儲存失敗：'+e.message)}});
+  M_.querySelectorAll('[data-ign]').forEach(b=>b.onclick=async()=>{const u=ins[+b.dataset.ign];const p=await getPlan(u.day);p.ign=[...(p.ign||[]),ignKey(u.day,u.staff,u)];await savePlan(u.day);toast('已忽略');render()});
+}
 /* ================= 案件清單 ================= */
 function renderList(){
   const f=S.lf;const q=f.q.trim().toLowerCase();
