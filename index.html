@@ -157,7 +157,7 @@ table.kt td{height:96px}
 </head>
 <body>
 <header>
-  <h1>Repair Shop 排程系統<small>v0.4.0</small></h1>
+  <h1>Repair Shop 排程系統<small>v0.4.2</small></h1>
   <nav id="nav"></nav>
   <div class="sync"><button class="hbtn" id="btnWho" style="display:none" title="切換身分">選擇身分</button><span class="dot" id="sdot"></span><span id="slbl">未載入</span><button class="hbtn" id="btnReload" title="重新讀取 RCPR、報工與排程資料">↻ 重新讀取</button></div>
 </header>
@@ -196,7 +196,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 <script>
 'use strict';
 /* ================= 常數 ================= */
-const APPVER='0.4.1';
+const APPVER='0.4.2';
 const WD=['日','一','二','三','四','五','六'];
 const SCOLORS=['var(--s0)','var(--s1)','var(--s2)','var(--s3)','var(--s4)','#7a7d75','#a14d8f'];
 const UCOLORS={'已收貨':'#9a9890','待拆解':'#eb6834','報告彙整':'#c98a00','報價中':'#6250d6','待維修':'#2a78d6','維修中':'#1baf7a','退修':'#7a7d75','報廢':'#55574f','OFF':'#16324f','待料':'#d6383a','HOLD':'#55574f'};
@@ -292,7 +292,7 @@ function loginDialog(){
       if(role==='guest'){ss.set('rs1_role','guest');ss.del('rs1_me');d.close();afterLogin();return}
       const isAdmin=role==='admin';const p=isAdmin?null:ppl.find(x=>x.name===name);
       const portalH=isAdmin&&S.shared&&S.shared.adminHash||'';
-      const local=isAdmin?S.set.adminHash:((S.set.pins||{})[name]||'');const hash=isAdmin?(portalH||local):(p&&p.pin)||local;
+      /* 規則5：人員只認共用設定的 PIN，不再退回本系統 settings.json 的舊 pins */const hash=isAdmin?(portalH||S.set.adminHash||''):((p&&p.pin)||'');
       /* 密碼和 PIN 只能由入口網站「共用設定」設定；系統裡不再提供「第一次使用請設定」，避免先點的人搶走管理者或冒用別人 */
       if(!hash){$('#whoBody').innerHTML=`<div class="warnbox">${isAdmin?'還沒有管理密碼。請到<b>入口網站 → 共用設定</b>設定管理密碼，這裡會用同一組密碼。':'「'+esc(name)+'」還沒有 PIN。請管理者到<b>入口網站 → 共用設定 → 人員</b>幫他設定。'}</div><div class="row"><button class="btn" data-x>關閉</button></div>`;$('#whoBody [data-x]').onclick=()=>d.close();return}
       const first=false;
